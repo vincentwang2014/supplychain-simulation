@@ -1,0 +1,30 @@
+[build]
+publish = "."
+
+[build.environment]
+NODE_VERSION = "22"
+
+[[headers]]
+for = "/index.html"
+[headers.values]
+Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+for = "/preview.html"
+[headers.values]
+Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+for = "/preview-v20260425*.html"
+[headers.values]
+Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+for = "/src/app/*"
+[headers.values]
+Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+for = "/src/simulation/*"
+[headers.values]
+Cache-Control = "public, max-age=0, must-revalidate"

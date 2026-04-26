@@ -1,0 +1,2505 @@
+import { runSimulation } from "../simulation/engine/runSimulation.js?v=20260425p";
+import { createDefaultScenario } from "./defaultScenario.js?v=20260425p";
+import { formatNumber, sumHistoryMetric } from "./utils.js?v=20260425p";
+
+const app = document.querySelector("#app");
+const VERSION = "20260425p";
+const SAVED_RUNS_KEY = "supply-chain-saved-simulations-v1";
+const defaultScenario = createDefaultScenario();
+
+function loadSavedSimulations() {
+  try {
+    const raw = window.localStorage.getItem(SAVED_RUNS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function createDefaultDemandBuilder(turnCount = 16) {
+  return {
+    mode: "step",
+    turnCount,
+    baseDemand: 4,
+    shockDemand: 8,
+    shockStartTurn: Math.min(7, turnCount),
+    recoveryDemand: 6,
+    recoveryStartTurn: Math.min(11, turnCount),
+  };
+}
+
+const state = {
+  scenarioText: JSON.stringify(defaultScenario, null, 2),
+  scenario: structuredClone(defaultScenario),
+  result: null,
+  selectedTurn: 1,
+  autoplayTimer: null,
+  speedMs: 900,
+  turnCount: defaultScenario.turnCount,
+  demandSequenceText: inferDemandSequenceText(defaultScenario),
+  demandBuilder: createDefaultDemandBuilder(defaultScenario.turnCount),
+  compareScenarioText: JSON.stringify(defaultScenario, null, 2),
+  compareDemandSequenceText: inferDemandSequenceText(defaultScenario),
+  compareTurnCount: defaultScenario.turnCount,
+  compareDemandBuilder: createDefaultDemandBuilder(defaultScenario.turnCount),
+  compareResult: null,
+  savedSimulations: loadSavedSimulations(),
+  libraryMessage: "",
+  dragNodeId: "",
+  builderMoveNodeId: "",
+  shareMessage: "",
+};
+
+function safeParseScenario(text) {
+  try {
+    return { value: JSON.parse(text), error: "" };
+  } catch (error) {
+    return { value: null, error: error.message };
+  }
+}
+
+function inferDemandSequenceText(scenario) {
+  const demand = scenario.demand ?? {};
+
+  if (demand.type === "sequence" && Array.isArray(demand.values)) {
+    return demand.values.join(", ");
+  }
+
+  if (demand.type === "constant") {
+    return Array.from({ length: scenario.turnCount ?? 12 }, () => demand.value ?? 0).join(", ");
+  }
+
+  if (demand.type === "step") {
+    const values = [];
+    for (let turn = 1; turn <= (scenario.turnCount ?? 12); turn += 1) {
+      let value = demand.initial ?? 0;
+      for (const change of demand.changes ?? []) {
+        if (turn >= change.turn) {
+          value = change.value;
+        }
+      }
+      values.push(value);
+    }
+    return values.join(", ");
+  }
+
+  return "4, 4, 4, 4, 8, 8, 8, 8, 6, 6, 6, 6";
+}
+
+function parseDemandSequence(text) {
+  const parts = text
+    .split(/[\s,]+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (!parts.length) {
+    return { values: null, error: "Enter at least one demand value." };
+  }
+
+  const values = parts.map((value) => Number(value));
+  if (values.some((value) => !Number.isFinite(value) || value < 0)) {
+    return { values: null, error: "Demand values must be non-negative numbers." };
+  }
+
+  return { values: values.map((value) => Math.round(value)), error: "" };
+}
+
+function normalizeDemandValues(values, turnCount) {
+  const normalizedTurnCount = Math.max(1, Math.round(Number(turnCount) || values.length || 1));
+  if (!values.length) {
+    return Array.from({ length: normalizedTurnCount }, () => 0);
+  }
+
+  if (values.length === normalizedTurnCount) {
+    return values;
+  }
+
+  if (values.length > normalizedTurnCount) {
+    return values.slice(0, normalizedTurnCount);
+  }
+
+  const last = values.at(-1);
+  return [...values, ...Array.from({ length: normalizedTurnCount - values.length }, () => last)];
+}
+
+function generateDemandSequenceFromBuilder(builder) {
+  const turnCount = Math.max(1, Math.round(Number(builder.turnCount) || 1));
+  const baseDemand = Math.max(0, Math.round(Number(builder.baseDemand) || 0));
+  const shockDemand = Math.max(0, Math.round(Number(builder.shockDemand) || 0));
+  const shockStartTurn = Math.min(turnCount, Math.max(1, Math.round(Number(builder.shockStartTurn) || 1)));
+  const recoveryDemand = Math.max(0, Math.round(Number(builder.recoveryDemand) || 0));
+  const recoveryStartTurn = Math.min(
+    turnCount + 1,
+    Math.max(shockStartTurn + 1, Math.round(Number(builder.recoveryStartTurn) || turnCount + 1))
+  );
+
+  if (builder.mode === "constant") {
+    return Array.from({ length: turnCount }, () => baseDemand);
+  }
+
+  if (builder.mode === "step") {
+    return Array.from({ length: turnCount }, (_, index) => {
+      const turn = index + 1;
+      if (turn >= recoveryStartTurn) {
+        return recoveryDemand;
+      }
+      if (turn >= shockStartTurn) {
+        return shockDemand;
+      }
+      return baseDemand;
+    });
+  }
+
+  if (builder.mode === "pulse") {
+    return Array.from({ length: turnCount }, (_, index) => {
+      const turn = index + 1;
+      if (turn === shockStartTurn) {
+        return shockDemand;
+      }
+      if (turn > shockStartTurn && turn >= recoveryStartTurn) {
+        return recoveryDemand;
+      }
+      return baseDemand;
+    });
+  }
+
+  return Array.from({ length: turnCount }, () => baseDemand);
+}
+
+function buildScenarioFromTextInputs(scenarioText, demandSequenceText, turnCount) {
+  const parsedScenario = safeParseScenario(scenarioText);
+  if (parsedScenario.error) {
+    return { scenario: null, scenarioError: parsedScenario.error, demandError: "" };
+  }
+
+  const parsedDemand = parseDemandSequence(demandSequenceText);
+  if (parsedDemand.error) {
+    return { scenario: null, scenarioError: "", demandError: parsedDemand.error };
+  }
+
+  const scenario = structuredClone(parsedScenario.value);
+  const normalizedValues = normalizeDemandValues(parsedDemand.values, turnCount);
+  scenario.turnCount = normalizedValues.length;
+  scenario.demand = {
+    type: "sequence",
+    values: normalizedValues,
+  };
+
+  return { scenario, scenarioError: "", demandError: "" };
+}
+
+function demandPreview(values, limit = 10) {
+  if (values.length <= limit) {
+    return values.join(", ");
+  }
+  return `${values.slice(0, limit).join(", ")} ...`;
+}
+
+function chartSvg({ values, stroke, fill, width = 360, height = 120 }) {
+  if (!values.length) {
+    return "";
+  }
+
+  const max = Math.max(...values, 1);
+  const min = Math.min(...values, 0);
+  const range = Math.max(max - min, 1);
+  const step = values.length === 1 ? width : width / (values.length - 1);
+
+  const points = values
+    .map((value, index) => {
+      const x = Math.round(index * step);
+      const y = Math.round(height - ((value - min) / range) * height);
+      return `${x},${y}`;
+    })
+    .join(" ");
+
+  const areaPoints = `0,${height} ${points} ${width},${height}`;
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" class="sparkline" role="img" aria-label="chart">
+      <polyline points="${areaPoints}" fill="${fill}" stroke="none"></polyline>
+      <polyline points="${points}" fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+    </svg>
+  `;
+}
+
+function multiSeriesChartSvg({ series, width = 720, height = 260 }) {
+  const allValues = series.flatMap((entry) => entry.values);
+  if (!allValues.length) {
+    return "";
+  }
+
+  const padding = { top: 16, right: 18, bottom: 34, left: 44 };
+  const innerWidth = width - padding.left - padding.right;
+  const innerHeight = height - padding.top - padding.bottom;
+  const max = Math.max(...allValues, 1);
+  const min = Math.min(...allValues, 0);
+  const range = Math.max(max - min, 1);
+  const maxPoints = Math.max(...series.map((entry) => entry.values.length), 1);
+  const step = maxPoints === 1 ? innerWidth : innerWidth / (maxPoints - 1);
+  const tickValues = Array.from({ length: 5 }, (_, index) =>
+    Math.round(max - (range / 4) * index)
+  );
+  const xTickIndexes = Array.from(
+    new Set(
+      [0, Math.floor((maxPoints - 1) / 3), Math.floor(((maxPoints - 1) * 2) / 3), maxPoints - 1].filter(
+        (value) => value >= 0
+      )
+    )
+  );
+
+  const lines = series
+    .map((entry) => {
+      const points = entry.values
+        .map((value, index) => {
+          const x = Math.round(padding.left + index * step);
+          const y = Math.round(
+            padding.top + innerHeight - ((value - min) / range) * innerHeight
+          );
+          return `${x},${y}`;
+        })
+        .join(" ");
+
+      const lastIndex = entry.values.length - 1;
+      const lastX = Math.round(padding.left + lastIndex * step);
+      const lastY = Math.round(
+        padding.top + innerHeight - ((entry.values[lastIndex] - min) / range) * innerHeight
+      );
+
+      return `
+        <polyline points="${points}" fill="none" stroke="${entry.color}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+        <circle cx="${lastX}" cy="${lastY}" r="4" fill="${entry.color}"></circle>
+      `;
+    })
+    .join("");
+
+  const grid = tickValues
+    .map((tick) => {
+      const y = Math.round(padding.top + innerHeight - ((tick - min) / range) * innerHeight);
+      return `
+        <line x1="${padding.left}" y1="${y}" x2="${width - padding.right}" y2="${y}" stroke="rgba(70,53,38,0.10)" stroke-width="1"></line>
+        <text x="${padding.left - 10}" y="${y + 4}" text-anchor="end" class="chart-axis-text">${tick}</text>
+      `;
+    })
+    .join("");
+
+  const xTicks = xTickIndexes
+    .map((index) => {
+      const x = Math.round(padding.left + index * step);
+      return `
+        <line x1="${x}" y1="${padding.top + innerHeight}" x2="${x}" y2="${padding.top + innerHeight + 6}" stroke="rgba(70,53,38,0.18)" stroke-width="1"></line>
+        <text x="${x}" y="${height - 10}" text-anchor="middle" class="chart-axis-text">T${index + 1}</text>
+      `;
+    })
+    .join("");
+
+  const labels = `
+    <text x="${padding.left}" y="${padding.top - 4}" class="chart-title-text">Orders received by turn</text>
+    <text x="${width / 2}" y="${height - 2}" text-anchor="middle" class="chart-axis-text">Turn</text>
+    <text transform="translate(14 ${height / 2}) rotate(-90)" text-anchor="middle" class="chart-axis-text">Units ordered</text>
+  `;
+
+  const plotBorder = `
+    <rect
+      x="${padding.left}"
+      y="${padding.top}"
+      width="${innerWidth}"
+      height="${innerHeight}"
+      rx="14"
+      fill="rgba(255,255,255,0.35)"
+      stroke="rgba(70,53,38,0.12)"
+      stroke-width="1"
+    ></rect>
+  `;
+
+    const seriesLabels = series
+      .map((entry, index) => {
+        const y = padding.top + 18 + index * 18;
+        return `
+          <line x1="${width - 146}" y1="${y}" x2="${width - 126}" y2="${y}" stroke="${entry.color}" stroke-width="3" stroke-linecap="round"></line>
+          <text x="${width - 118}" y="${y + 4}" class="chart-series-text">${entry.label}</text>
+        `;
+      })
+      .join("");
+
+  return `
+    <svg viewBox="0 0 ${width} ${height}" class="comparison-chart" role="img" aria-label="chart">
+      ${plotBorder}
+      ${grid}
+      ${xTicks}
+      ${lines}
+      ${labels}
+      ${seriesLabels}
+    </svg>
+  `;
+}
+
+function variance(values) {
+  if (!values.length) {
+    return 0;
+  }
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  return values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+}
+
+function getTurnState(nodeId, turn) {
+  return state.result.nodeHistory[nodeId][Math.max(0, turn - 1)];
+}
+
+function getCurrentScenarioFromEditor() {
+  const parsed = safeParseScenario(state.scenarioText);
+  return parsed.error ? state.scenario : parsed.value;
+}
+
+function getCurrentComparisonScenarioFromEditor() {
+  const parsed = safeParseScenario(state.compareScenarioText);
+  return parsed.error ? getCurrentScenarioFromEditor() : parsed.value;
+}
+
+function updateScenarioText(mutator) {
+  const scenario = structuredClone(getCurrentScenarioFromEditor());
+  mutator(scenario);
+  state.scenarioText = JSON.stringify(scenario, null, 2);
+  render();
+}
+
+function updateComparisonScenarioText(mutator) {
+  const scenario = structuredClone(getCurrentComparisonScenarioFromEditor());
+  mutator(scenario);
+  state.compareScenarioText = JSON.stringify(scenario, null, 2);
+  render();
+}
+
+function persistSavedSimulations() {
+  try {
+    window.localStorage.setItem(SAVED_RUNS_KEY, JSON.stringify(state.savedSimulations));
+  } catch {
+    state.libraryMessage = "This browser blocked local save. Download still works.";
+  }
+}
+
+function slugify(value) {
+  return String(value || "simulation")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+function downloadJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function copyTextToClipboard(text, successMessage) {
+  try {
+    await navigator.clipboard.writeText(text);
+    state.shareMessage = successMessage;
+  } catch {
+    state.shareMessage = "Clipboard access was blocked. Use the download buttons instead.";
+  }
+  render();
+}
+
+function createNodeId(name, existingIds) {
+  const base = slugify(name || "layer") || "layer";
+  let candidate = base;
+  let suffix = 2;
+
+  while (existingIds.has(candidate)) {
+    candidate = `${base}-${suffix}`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+function defaultNodeTemplate(index, existingIds) {
+  const name = `Layer ${index + 1}`;
+  return {
+    id: createNodeId(name, existingIds),
+    name,
+    role: "custom",
+    initialInventory: 8,
+    outboundLeadTime: 2,
+    costModel: {
+      unitRevenue: 7,
+      unitProcurementCost: 4,
+      unitHoldingCost: 1,
+      unitShortagePenalty: 10,
+      unitTransportCost: 0,
+    },
+    policyId: "forecast",
+    policyParams: {
+      forecastWindow: 4,
+      sentiment: 0.12,
+      serviceLevel: 1.02,
+      smoothing: 0.5,
+      maxGrowthFactor: 1.35,
+    },
+  };
+}
+
+function normalizeScenarioChain(scenario) {
+  const nodes = (scenario.nodes ?? []).map((node, index, list) => {
+    const total = list.length;
+    const isCustomerFacing = index === 0;
+    const isSource = index === total - 1;
+    const role =
+      isSource ? "manufacturer" : node.role === "manufacturer" ? "custom" : node.role ?? (isCustomerFacing ? "retailer" : "custom");
+
+    const normalized = {
+      ...node,
+      role,
+      initialInventory: Math.max(0, Math.round(node.initialInventory ?? 0)),
+      initialBacklog: Math.max(0, Math.round(node.initialBacklog ?? 0)),
+      outboundLeadTime: Math.max(0, Math.round(node.outboundLeadTime ?? 0)),
+      costModel: {
+        unitRevenue: 0,
+        unitProcurementCost: 0,
+        unitProductionCost: 0,
+        unitHoldingCost: 1,
+        unitShortagePenalty: 8,
+        unitTransportCost: 0,
+        ...(node.costModel ?? {}),
+      },
+    };
+
+    if (isSource) {
+      normalized.productionLeadTime = Math.max(0, Math.round(node.productionLeadTime ?? 2));
+    } else {
+      delete normalized.productionLeadTime;
+    }
+
+    return normalized;
+  });
+
+  scenario.nodes = nodes.map((node, index) => ({
+    ...node,
+    downstreamNodeId: index === 0 ? undefined : nodes[index - 1].id,
+    upstreamNodeId: index === nodes.length - 1 ? undefined : nodes[index + 1].id,
+  }));
+
+  return scenario;
+}
+
+function mutateStructuredScenario(mutator) {
+  updateScenarioText((scenario) => {
+    mutator(scenario);
+    normalizeScenarioChain(scenario);
+  });
+}
+
+function mutateStructuredComparisonScenario(mutator) {
+  updateComparisonScenarioText((scenario) => {
+    mutator(scenario);
+    normalizeScenarioChain(scenario);
+  });
+}
+
+function insertNodeAt(index) {
+  mutateStructuredScenario((scenario) => {
+    const existingIds = new Set(scenario.nodes.map((node) => node.id));
+    scenario.nodes.splice(index, 0, defaultNodeTemplate(index, existingIds));
+  });
+}
+
+function removeNode(nodeId) {
+  mutateStructuredScenario((scenario) => {
+    if (scenario.nodes.length <= 2) {
+      return;
+    }
+    scenario.nodes = scenario.nodes.filter((node) => node.id !== nodeId);
+  });
+}
+
+function moveNode(nodeId, offset) {
+  mutateStructuredScenario((scenario) => {
+    const currentIndex = scenario.nodes.findIndex((node) => node.id === nodeId);
+    if (currentIndex === -1) {
+      return;
+    }
+    const targetIndex = Math.max(0, Math.min(scenario.nodes.length - 1, currentIndex + offset));
+    if (targetIndex === currentIndex) {
+      return;
+    }
+    const [node] = scenario.nodes.splice(currentIndex, 1);
+    scenario.nodes.splice(targetIndex, 0, node);
+  });
+}
+
+function reorderNode(nodeId, dropIndex) {
+  mutateStructuredScenario((scenario) => {
+    const currentIndex = scenario.nodes.findIndex((node) => node.id === nodeId);
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const [node] = scenario.nodes.splice(currentIndex, 1);
+    const targetIndex = currentIndex < dropIndex ? dropIndex - 1 : dropIndex;
+    const normalizedIndex = Math.max(0, Math.min(scenario.nodes.length, targetIndex));
+    scenario.nodes.splice(normalizedIndex, 0, node);
+  });
+  state.builderMoveNodeId = "";
+  state.dragNodeId = "";
+}
+
+function buildRunExportPayload(resultOverride = null) {
+  return {
+    kind: "simulation-run",
+    version: VERSION,
+    exportedAt: new Date().toISOString(),
+    scenario: structuredClone(state.scenario),
+    result: structuredClone(resultOverride ?? state.result),
+    demandSequence: state.demandSequenceText,
+    turnCount: state.turnCount,
+  };
+}
+
+function saveCurrentSimulation() {
+  const built = buildScenarioFromEditors();
+  if (built.scenarioError || built.demandError) {
+    state.libraryMessage = built.scenarioError || built.demandError;
+    render();
+    return;
+  }
+
+  const result = runSimulation(built.scenario);
+  state.scenario = built.scenario;
+  state.scenarioText = JSON.stringify(built.scenario, null, 2);
+  state.result = result;
+  state.turnCount = built.scenario.turnCount;
+  state.selectedTurn = Math.min(state.selectedTurn, result.turns);
+
+  const entry = {
+    id: `saved-${Date.now()}`,
+    label: `${built.scenario.name || "Simulation"} · ${new Date().toLocaleString()}`,
+    savedAt: new Date().toISOString(),
+    turnCount: built.scenario.turnCount,
+    nodeCount: built.scenario.nodes.length,
+    scenario: structuredClone(built.scenario),
+    result: structuredClone(result),
+    demandSequence: state.demandSequenceText,
+  };
+
+  state.savedSimulations = [entry, ...state.savedSimulations].slice(0, 20);
+  persistSavedSimulations();
+  state.libraryMessage = `Saved "${entry.label}" locally in this browser.`;
+  render();
+}
+
+function downloadCurrentScenario() {
+  const built = buildScenarioFromEditors();
+  if (built.scenarioError || built.demandError) {
+    state.libraryMessage = built.scenarioError || built.demandError;
+    render();
+    return;
+  }
+
+  downloadJson(
+    `${slugify(built.scenario.name)}-scenario.json`,
+    {
+      kind: "scenario-config",
+      version: VERSION,
+      exportedAt: new Date().toISOString(),
+      scenario: built.scenario,
+      demandSequence: state.demandSequenceText,
+      turnCount: built.scenario.turnCount,
+    }
+  );
+  state.libraryMessage = "Downloaded the current scenario JSON.";
+  render();
+}
+
+function downloadCurrentSimulation() {
+  const built = buildScenarioFromEditors();
+  if (built.scenarioError || built.demandError) {
+    state.libraryMessage = built.scenarioError || built.demandError;
+    render();
+    return;
+  }
+
+  const result = runSimulation(built.scenario);
+  state.scenario = built.scenario;
+  state.scenarioText = JSON.stringify(built.scenario, null, 2);
+  state.result = result;
+  downloadJson(`${slugify(built.scenario.name)}-run.json`, buildRunExportPayload(result));
+  state.libraryMessage = "Downloaded the simulation run JSON.";
+  render();
+}
+
+function loadSavedSimulation(runId) {
+  const entry = state.savedSimulations.find((saved) => saved.id === runId);
+  if (!entry) {
+    return;
+  }
+
+  state.scenario = structuredClone(entry.scenario);
+  state.scenarioText = JSON.stringify(entry.scenario, null, 2);
+  state.turnCount = entry.turnCount ?? entry.scenario.turnCount;
+  state.demandSequenceText = entry.demandSequence || inferDemandSequenceText(entry.scenario);
+  state.demandBuilder = createDefaultDemandBuilder(state.turnCount);
+  state.result = structuredClone(entry.result ?? runSimulation(entry.scenario));
+  state.selectedTurn = 1;
+  state.libraryMessage = `Loaded "${entry.label}".`;
+  render();
+}
+
+function deleteSavedSimulation(runId) {
+  state.savedSimulations = state.savedSimulations.filter((saved) => saved.id !== runId);
+  persistSavedSimulations();
+  state.libraryMessage = "Removed the saved simulation.";
+  render();
+}
+
+function downloadSavedSimulation(runId) {
+  const entry = state.savedSimulations.find((saved) => saved.id === runId);
+  if (!entry) {
+    return;
+  }
+
+  downloadJson(
+    `${slugify(entry.label)}.json`,
+    {
+      kind: "simulation-run",
+      version: VERSION,
+      exportedAt: new Date().toISOString(),
+      scenario: entry.scenario,
+      result: entry.result,
+      demandSequence: entry.demandSequence,
+      turnCount: entry.turnCount,
+    }
+  );
+  state.libraryMessage = `Downloaded "${entry.label}".`;
+  render();
+}
+
+async function importSimulationFile(file) {
+  if (!file) {
+    return;
+  }
+
+  try {
+    const raw = await file.text();
+    const parsed = JSON.parse(raw);
+    const scenario = parsed.scenario ?? parsed;
+    const demandSequence = parsed.demandSequence ?? inferDemandSequenceText(scenario);
+
+    state.scenario = structuredClone(scenario);
+    state.scenarioText = JSON.stringify(scenario, null, 2);
+    state.turnCount = parsed.turnCount ?? scenario.turnCount;
+    state.demandSequenceText = demandSequence;
+    state.demandBuilder = createDefaultDemandBuilder(state.turnCount);
+    state.result = parsed.result ? structuredClone(parsed.result) : runSimulation(scenario);
+    state.selectedTurn = 1;
+    state.libraryMessage = `Imported "${file.name}".`;
+  } catch (error) {
+    state.libraryMessage = `Could not import JSON: ${error.message}`;
+  }
+
+  render();
+}
+
+function createTopNavMarkup() {
+  return `
+    <section class="top-nav-shell">
+      <div class="top-nav">
+        <a class="brand-mark" href="#top">Supply Chain Simulation</a>
+        <nav class="top-nav-links" aria-label="Primary">
+          <a href="#demand-lab">Demand</a>
+          <a href="#chain-builder">Chain Builder</a>
+          <a href="#strategy-lab">Strategy</a>
+          <a href="#share-lab">Share</a>
+          <a href="#bullwhip-analysis">Bullwhip</a>
+        </nav>
+      </div>
+    </section>
+  `;
+}
+
+function createAboutMarkup() {
+  return `
+    <section id="about-sim" class="panel about-panel">
+      <div class="section-heading">
+        <h2>How It Works</h2>
+        <span class="supporting">A configurable Beer Game style simulator for teaching, workshops, and what-if experiments.</span>
+      </div>
+      <div class="about-grid">
+        <article class="about-card">
+          <h3>Local Information Only</h3>
+          <p class="supporting">Each tier sees only its downstream order, local inventory, backlog, and delayed inbound supply. No one gets full-system visibility while deciding what to ship or order.</p>
+        </article>
+        <article class="about-card">
+          <h3>Delay Creates Distortion</h3>
+          <p class="supporting">Shipment and production delays create lag. That lag is what turns a modest customer shock into amplified waves of orders, backlog, and inventory upstream.</p>
+        </article>
+        <article class="about-card">
+          <h3>Strategy Shapes the Outcome</h3>
+          <p class="supporting">You can tune each node’s policy, sentiment, service bias, and delays, then compare how conservative vs aggressive decisions change profit and the bullwhip effect.</p>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function applyDemandSequenceFromInput() {
+  const parsed = parseDemandSequence(state.demandSequenceText);
+  const errorEl = document.querySelector("#demand-error");
+
+  if (parsed.error) {
+    if (errorEl) {
+      errorEl.textContent = parsed.error;
+    }
+    return;
+  }
+
+  updateScenarioText((scenario) => {
+    const values = normalizeDemandValues(parsed.values, state.turnCount);
+    scenario.turnCount = values.length;
+    scenario.demand = {
+      type: "sequence",
+      values,
+    };
+  });
+
+  if (errorEl) {
+    errorEl.textContent = "";
+  }
+}
+
+function applyGeneratedDemand(compare = false) {
+  const builder = compare ? state.compareDemandBuilder : state.demandBuilder;
+  const values = generateDemandSequenceFromBuilder(builder);
+  const sequenceText = values.join(", ");
+
+  if (compare) {
+    state.compareTurnCount = builder.turnCount;
+    state.compareDemandSequenceText = sequenceText;
+  } else {
+    state.turnCount = builder.turnCount;
+    state.demandSequenceText = sequenceText;
+  }
+
+  render();
+}
+
+function updateDemandBuilderField(compare, field, rawValue) {
+  const target = compare ? state.compareDemandBuilder : state.demandBuilder;
+  if (field === "mode") {
+    target.mode = rawValue;
+  } else {
+    target[field] = Math.max(0, Math.round(Number(rawValue) || 0));
+  }
+
+  if (compare) {
+    state.compareTurnCount = Math.max(1, target.turnCount);
+  } else {
+    state.turnCount = Math.max(1, target.turnCount);
+  }
+}
+
+function buildScenarioFromEditors() {
+  return buildScenarioFromTextInputs(state.scenarioText, state.demandSequenceText, state.turnCount);
+}
+
+function applyDemandShockPreset() {
+  state.demandSequenceText = "4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 6, 6, 6, 6, 6, 6";
+  state.turnCount = 16;
+  state.demandBuilder = {
+    ...state.demandBuilder,
+    mode: "step",
+    turnCount: 16,
+    baseDemand: 4,
+    shockDemand: 8,
+    shockStartTurn: 6,
+    recoveryDemand: 6,
+    recoveryStartTurn: 11,
+  };
+  applyDemandSequenceFromInput();
+}
+
+function applyDemandWhipsawPreset() {
+  state.demandSequenceText = "4, 5, 4, 6, 4, 8, 3, 9, 4, 7, 5, 8, 4, 6, 4, 5";
+  state.turnCount = 16;
+  applyDemandSequenceFromInput();
+}
+
+function applyClassicBullwhipPreset() {
+  const turns = 30;
+  state.turnCount = turns;
+  state.demandBuilder = {
+    mode: "step",
+    turnCount: turns,
+    baseDemand: 4,
+    shockDemand: 10,
+    shockStartTurn: 8,
+    recoveryDemand: 4,
+    recoveryStartTurn: 18,
+  };
+  applyGeneratedDemand(false);
+
+  updateScenarioText((scenario) => {
+    for (const node of scenario.nodes) {
+      if (node.policyId === "forecast") {
+        node.policyParams = {
+          ...(node.policyParams ?? {}),
+          sentiment:
+            node.id === "retailer"
+              ? 0.12
+              : node.id === "distributor"
+              ? 0.18
+              : node.id === "wholesaler"
+              ? 0.25
+              : 0.32,
+          serviceLevel:
+            node.id === "retailer"
+              ? 1.0
+              : node.id === "distributor"
+              ? 1.05
+              : node.id === "wholesaler"
+              ? 1.1
+              : 1.15,
+          smoothing:
+            node.id === "retailer"
+              ? 0.45
+              : node.id === "distributor"
+              ? 0.4
+              : node.id === "wholesaler"
+              ? 0.35
+              : 0.3,
+          maxGrowthFactor:
+            node.id === "retailer"
+              ? 1.35
+              : node.id === "distributor"
+              ? 1.45
+              : node.id === "wholesaler"
+              ? 1.55
+              : 1.7,
+        };
+      }
+    }
+  });
+}
+
+function resetScenarioAndDemand() {
+  stopAutoplay();
+  state.scenario = structuredClone(defaultScenario);
+  state.scenarioText = JSON.stringify(defaultScenario, null, 2);
+  state.turnCount = defaultScenario.turnCount;
+  state.demandSequenceText = inferDemandSequenceText(defaultScenario);
+  state.demandBuilder = createDefaultDemandBuilder(defaultScenario.turnCount);
+  state.selectedTurn = 1;
+  runCurrentScenario();
+}
+
+function runCurrentScenario() {
+  const scenarioErrorEl = document.querySelector("#scenario-error");
+  const demandErrorEl = document.querySelector("#demand-error");
+  const built = buildScenarioFromEditors();
+
+  if (built.scenarioError || built.demandError) {
+    if (scenarioErrorEl) {
+      scenarioErrorEl.textContent = built.scenarioError;
+    }
+    if (demandErrorEl) {
+      demandErrorEl.textContent = built.demandError;
+    }
+    return;
+  }
+
+  state.scenario = built.scenario;
+  state.scenarioText = JSON.stringify(state.scenario, null, 2);
+  state.turnCount = built.scenario.turnCount;
+  state.result = runSimulation(state.scenario);
+  state.selectedTurn = Math.min(state.selectedTurn, state.result.turns);
+  state.demandSequenceText = inferDemandSequenceText(state.scenario);
+
+  if (scenarioErrorEl) {
+    scenarioErrorEl.textContent = "";
+  }
+
+  if (demandErrorEl) {
+    demandErrorEl.textContent = "";
+  }
+
+  render();
+}
+
+function runComparisonScenario() {
+  const scenarioErrorEl = document.querySelector("#compare-scenario-error");
+  const demandErrorEl = document.querySelector("#compare-demand-error");
+  const built = buildScenarioFromTextInputs(
+    state.compareScenarioText,
+    state.compareDemandSequenceText,
+    state.compareTurnCount
+  );
+
+  if (built.scenarioError || built.demandError) {
+    if (scenarioErrorEl) {
+      scenarioErrorEl.textContent = built.scenarioError;
+    }
+    if (demandErrorEl) {
+      demandErrorEl.textContent = built.demandError;
+    }
+    return;
+  }
+
+  state.compareScenarioText = JSON.stringify(built.scenario, null, 2);
+  state.compareTurnCount = built.scenario.turnCount;
+  state.compareDemandSequenceText = inferDemandSequenceText(built.scenario);
+  state.compareResult = runSimulation(built.scenario);
+
+  if (scenarioErrorEl) {
+    scenarioErrorEl.textContent = "";
+  }
+
+  if (demandErrorEl) {
+    demandErrorEl.textContent = "";
+  }
+
+  render();
+}
+
+function cloneCurrentToComparison() {
+  state.compareScenarioText = state.scenarioText;
+  state.compareDemandSequenceText = state.demandSequenceText;
+  state.compareTurnCount = state.turnCount;
+  state.compareDemandBuilder = structuredClone(state.demandBuilder);
+  state.compareResult = null;
+  render();
+}
+
+function stopAutoplay() {
+  if (state.autoplayTimer) {
+    window.clearInterval(state.autoplayTimer);
+    state.autoplayTimer = null;
+  }
+}
+
+function startAutoplay() {
+  stopAutoplay();
+  state.autoplayTimer = window.setInterval(() => {
+    if (!state.result) {
+      stopAutoplay();
+      return;
+    }
+
+    if (state.selectedTurn >= state.result.turns) {
+      stopAutoplay();
+      render();
+      return;
+    }
+
+    state.selectedTurn += 1;
+    render();
+  }, state.speedMs);
+}
+
+function getBullwhipMetrics() {
+  if (!state.result) {
+    return [];
+  }
+
+  return getBullwhipMetricsForResult(state.result);
+}
+
+function getBullwhipMetricsForResult(result) {
+  if (!result) {
+    return [];
+  }
+
+  const demandHistory = result.nodeHistory[result.orderedNodeIds[0]].map((turn) => turn.orderReceived);
+  const demandPeak = Math.max(...demandHistory, 1);
+  const demandVariance = Math.max(variance(demandHistory), 0.0001);
+
+  return result.orderedNodeIds.map((nodeId) => {
+    const history = result.nodeHistory[nodeId];
+    const ordersReceived = history.map((turn) => turn.orderReceived);
+    const ordersPlaced = history.map(
+      (turn) => turn.replenishmentOrderPlaced || turn.productionOrderPlaced || 0
+    );
+    const inventory = history.map((turn) => turn.inventoryEnd);
+    const backlog = history.map((turn) => turn.backlogEnd);
+    const pipelines = history.map((turn) => turn.inboundPipelineTotalEnd);
+    const inventoryPosition = history.map(
+      (turn) => turn.inventoryEnd + turn.inboundPipelineTotalEnd - turn.backlogEnd
+    );
+    const peakOrder = Math.max(...ordersPlaced, 0);
+    const placedVariance = variance(ordersPlaced);
+    const amplification = peakOrder / demandPeak;
+    const bullwhipScore = placedVariance / demandVariance;
+
+    return {
+      nodeId,
+      peakOrder,
+      amplification,
+      demandHistory,
+      ordersReceived,
+      ordersPlaced,
+      inventory,
+      backlog,
+      pipelines,
+      inventoryPosition,
+      placedVariance,
+      bullwhipScore,
+    };
+  });
+}
+
+function getPolicyLabel(policyId) {
+  return (
+    {
+      fixedOrder: "Fixed order",
+      baseStock: "Base-stock replenishment",
+      profitAware: "Profit-aware heuristic",
+      forecast: "Forecast with sentiment",
+    }[policyId] ?? policyId
+  );
+}
+
+function getPolicySummary(node) {
+  const params = node.policyParams ?? {};
+
+  if (node.policyId === "fixedOrder") {
+    return `Always order a constant amount of ${params.amount ?? 0} regardless of recent noise.`;
+  }
+
+  if (node.policyId === "baseStock") {
+    return `Tries to restore inventory position to a target of ${params.targetBaseStock ?? 0} units after considering backlog and in-flight supply.`;
+  }
+
+  if (node.policyId === "profitAware") {
+    return `Balances shortage pain versus holding cost. A target cover of ${params.targetCover ?? 1} makes this node carry more forward protection when demand spikes.`;
+  }
+
+  if (node.policyId === "forecast") {
+    return `Forecasts visible demand from recent history, then tilts that forecast with sentiment ${Number(params.sentiment ?? 0).toFixed(2)}. Smoothing ${Number(params.smoothing ?? 0.55).toFixed(2)} tempers sudden changes, and growth cap ${Number(params.maxGrowthFactor ?? 1.35).toFixed(2)}x limits how fast replenishment can jump turn-to-turn.`;
+  }
+
+  return "Custom policy.";
+}
+
+function getPolicyFormula(node) {
+  const params = node.policyParams ?? {};
+
+  if (node.policyId === "fixedOrder") {
+    return "order_t = fixed_amount";
+  }
+
+  if (node.policyId === "baseStock") {
+    return `inventory_position = on_hand + inbound_pipeline - backlog\norder_t = max(0, target_base_stock - inventory_position)\ncurrent target = ${params.targetBaseStock ?? 0}`;
+  }
+
+  if (node.policyId === "profitAware") {
+    return `service_bias = shortage_penalty / holding_cost\nsafety_stock = target_cover * latest_order * min(service_bias, 3)\ntarget_position = backlog + latest_order + safety_stock\norder_t = max(0, target_position - (on_hand + inbound_pipeline))\ncurrent target_cover = ${params.targetCover ?? 1}`;
+  }
+
+  if (node.policyId === "forecast") {
+    return `baseline = avg(recent visible orders)\ntrend = latest_visible_order - oldest_visible_order\nforecast = baseline + 0.2*trend + 0.18*sentiment*baseline\nsafety_stock = forecast*(service_level - 0.35) + positive_trend_buffer\nraw_order = target_position - current_position\nsmoothed_order = smoothing*previous_order + (1-smoothing)*raw_order\norder_t = min(smoothed_order, previous_order * max_growth_factor)\ncurrent sentiment=${Number(params.sentiment ?? 0).toFixed(2)}, smoothing=${Number(params.smoothing ?? 0.55).toFixed(2)}, growth cap=${Number(params.maxGrowthFactor ?? 1.35).toFixed(2)}x`;
+  }
+
+  return "Custom policy formula.";
+}
+
+function getNodeStrategyDescription(node) {
+  const delayBits = [
+    `shipment delay ${node.outboundLeadTime} turns`,
+    node.productionLeadTime !== undefined ? `production delay ${node.productionLeadTime} turns` : null,
+  ].filter(Boolean);
+
+  return `${getPolicyLabel(node.policyId)} with ${delayBits.join(", ")}. ${getPolicySummary(node)}`;
+}
+
+function getNodeStrategyControls(node, options = {}) {
+  const nodeAttr = options.compare ? "data-compare-node-id" : "data-node-id";
+  const fieldAttr = options.compare ? "data-compare-field" : "data-field";
+  const params = node.policyParams ?? {};
+
+  const policySpecific = [];
+
+  if (node.policyId === "fixedOrder") {
+    policySpecific.push(`
+        <label class="mini-field">
+          <span>Fixed Order Amount</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.amount" type="number" min="0" step="1" value="${params.amount ?? 0}" />
+        </label>
+    `);
+  }
+
+  if (node.policyId === "baseStock") {
+    policySpecific.push(`
+        <label class="mini-field">
+          <span>Base Stock Target</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.targetBaseStock" type="number" min="0" step="1" value="${params.targetBaseStock ?? 0}" />
+        </label>
+    `);
+  }
+
+  if (node.policyId === "profitAware") {
+    policySpecific.push(`
+        <label class="mini-field">
+          <span>Target Cover</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.targetCover" type="number" min="0" step="1" value="${params.targetCover ?? 1}" />
+        </label>
+    `);
+  }
+
+  if (node.policyId === "forecast") {
+    policySpecific.push(`
+        <label class="mini-field">
+          <span>Forecast Window</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.forecastWindow" type="number" min="1" step="1" value="${params.forecastWindow ?? 4}" />
+        </label>
+        <label class="mini-field">
+          <span>Sentiment</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.sentiment" type="number" min="-1" max="1" step="0.05" value="${params.sentiment ?? 0}" />
+        </label>
+        <label class="mini-field">
+          <span>Service Level</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.serviceLevel" type="number" min="0" step="0.05" value="${params.serviceLevel ?? 1.2}" />
+        </label>
+        <label class="mini-field">
+          <span>Smoothing</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.smoothing" type="number" min="0" max="0.95" step="0.05" value="${params.smoothing ?? 0.55}" />
+        </label>
+        <label class="mini-field">
+          <span>Max Growth Per Turn</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="policy.maxGrowthFactor" type="number" min="1" step="0.05" value="${params.maxGrowthFactor ?? 1.35}" />
+        </label>
+    `);
+  }
+
+  return `
+    <article class="strategy-card">
+      <div class="section-heading">
+        <h3>${node.name}</h3>
+        <span>${node.role}</span>
+      </div>
+      <p class="strategy-copy">${getNodeStrategyDescription(node)}</p>
+      <pre class="formula-block">${getPolicyFormula(node)}</pre>
+      <div class="strategy-grid">
+          <label class="mini-field">
+            <span>Decision Policy</span>
+            <select ${nodeAttr}="${node.id}" ${fieldAttr}="policyId">
+            <option value="forecast" ${node.policyId === "forecast" ? "selected" : ""}>Forecast with sentiment</option>
+            <option value="baseStock" ${node.policyId === "baseStock" ? "selected" : ""}>Base-stock replenishment</option>
+            <option value="profitAware" ${node.policyId === "profitAware" ? "selected" : ""}>Profit-aware heuristic</option>
+            <option value="fixedOrder" ${node.policyId === "fixedOrder" ? "selected" : ""}>Fixed order</option>
+          </select>
+        </label>
+        <label class="mini-field">
+          <span>Initial Inventory</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="initialInventory" type="number" min="0" step="1" value="${node.initialInventory}" />
+        </label>
+        <label class="mini-field">
+          <span>Shipment Delay</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="outboundLeadTime" type="number" min="0" step="1" value="${node.outboundLeadTime}" />
+        </label>
+        ${
+          node.productionLeadTime !== undefined
+            ? `
+        <label class="mini-field">
+          <span>Production Delay</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="productionLeadTime" type="number" min="0" step="1" value="${node.productionLeadTime}" />
+        </label>
+        `
+            : ""
+        }
+        <label class="mini-field">
+          <span>Holding Cost</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="cost.unitHoldingCost" type="number" min="0" step="1" value="${node.costModel.unitHoldingCost}" />
+        </label>
+        <label class="mini-field">
+          <span>Shortage Penalty</span>
+          <input ${nodeAttr}="${node.id}" ${fieldAttr}="cost.unitShortagePenalty" type="number" min="0" step="1" value="${node.costModel.unitShortagePenalty}" />
+        </label>
+        ${policySpecific.join("")}
+      </div>
+    </article>
+  `;
+}
+
+function applyNodeFieldChange(nodeId, field, rawValue) {
+  const value = rawValue === "" ? 0 : Number(rawValue);
+  if (!Number.isFinite(value) && field !== "policyId") {
+    if (field !== "name" && field !== "role") {
+      return;
+    }
+  }
+
+  mutateStructuredScenario((scenario) => {
+    const node = scenario.nodes.find((entry) => entry.id === nodeId);
+    if (!node) {
+      return;
+    }
+
+    if (field === "name") {
+      node.name = rawValue || node.name;
+      return;
+    }
+
+    if (field === "role") {
+      node.role = rawValue;
+      return;
+    }
+
+    if (field === "policyId") {
+      node.policyId = rawValue;
+      if (rawValue === "fixedOrder") {
+        node.policyParams = { amount: node.policyParams?.amount ?? 4 };
+      } else if (rawValue === "baseStock") {
+        node.policyParams = { targetBaseStock: node.policyParams?.targetBaseStock ?? 12 };
+      } else if (rawValue === "profitAware") {
+        node.policyParams = { targetCover: node.policyParams?.targetCover ?? 2 };
+      } else if (rawValue === "forecast") {
+        node.policyParams = {
+          forecastWindow: node.policyParams?.forecastWindow ?? 4,
+          sentiment: node.policyParams?.sentiment ?? 0.2,
+          serviceLevel: node.policyParams?.serviceLevel ?? 1.2,
+          smoothing: node.policyParams?.smoothing ?? 0.55,
+          maxGrowthFactor: node.policyParams?.maxGrowthFactor ?? 1.35,
+        };
+      }
+      return;
+    }
+
+    if (field === "initialInventory" || field === "outboundLeadTime" || field === "productionLeadTime") {
+      node[field] = Math.max(0, Math.round(value));
+      return;
+    }
+
+    if (field.startsWith("cost.")) {
+      const costField = field.replace("cost.", "");
+      node.costModel[costField] = Math.max(0, value);
+      return;
+    }
+
+    if (field.startsWith("policy.")) {
+      const policyField = field.replace("policy.", "");
+      node.policyParams = {
+        ...(node.policyParams ?? {}),
+        [policyField]: Math.max(0, value),
+      };
+    }
+  });
+}
+
+function applyComparisonNodeFieldChange(nodeId, field, rawValue) {
+  const value = rawValue === "" ? 0 : Number(rawValue);
+  if (!Number.isFinite(value) && field !== "policyId") {
+    if (field !== "name" && field !== "role") {
+      return;
+    }
+  }
+
+  mutateStructuredComparisonScenario((scenario) => {
+    const node = scenario.nodes.find((entry) => entry.id === nodeId);
+    if (!node) {
+      return;
+    }
+
+    if (field === "name") {
+      node.name = rawValue || node.name;
+      return;
+    }
+
+    if (field === "role") {
+      node.role = rawValue;
+      return;
+    }
+
+    if (field === "policyId") {
+      node.policyId = rawValue;
+      if (rawValue === "fixedOrder") {
+        node.policyParams = { amount: node.policyParams?.amount ?? 4 };
+      } else if (rawValue === "baseStock") {
+        node.policyParams = { targetBaseStock: node.policyParams?.targetBaseStock ?? 12 };
+      } else if (rawValue === "profitAware") {
+        node.policyParams = { targetCover: node.policyParams?.targetCover ?? 2 };
+      } else if (rawValue === "forecast") {
+        node.policyParams = {
+          forecastWindow: node.policyParams?.forecastWindow ?? 4,
+          sentiment: node.policyParams?.sentiment ?? 0.2,
+          serviceLevel: node.policyParams?.serviceLevel ?? 1.2,
+          smoothing: node.policyParams?.smoothing ?? 0.55,
+          maxGrowthFactor: node.policyParams?.maxGrowthFactor ?? 1.35,
+        };
+      }
+      return;
+    }
+
+    if (field === "initialInventory" || field === "outboundLeadTime" || field === "productionLeadTime") {
+      node[field] = Math.max(0, Math.round(value));
+      return;
+    }
+
+    if (field.startsWith("cost.")) {
+      const costField = field.replace("cost.", "");
+      node.costModel[costField] = Math.max(0, value);
+      return;
+    }
+
+    if (field.startsWith("policy.")) {
+      const policyField = field.replace("policy.", "");
+      node.policyParams = {
+        ...(node.policyParams ?? {}),
+        [policyField]: Math.max(0, value),
+      };
+    }
+  });
+}
+
+function createHeroMarkup() {
+  const bullwhipMetrics = getBullwhipMetrics();
+  const mostAmplified = bullwhipMetrics.reduce(
+    (best, current) => (current.amplification > best.amplification ? current : best),
+    bullwhipMetrics[0] ?? { amplification: 1, nodeId: "retailer", peakOrder: 0 }
+  );
+
+  return `
+    <section id="top" class="panel hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Beer Game Playground · v${VERSION}</p>
+        <h1>Push demand in. Watch distortion climb upstream.</h1>
+        <p class="lede">
+          Each chain node reacts only to its local order signal, its inventory, its backlog, and delayed arrivals.
+          Now those decisions can also be forecast-driven, with sentiment ranging from conservative to aggressive.
+        </p>
+        <div class="insight-strip">
+          <div class="insight-chip">
+            <span>Customer Demand Peak</span>
+            <strong>${formatNumber(bullwhipMetrics[0]?.peakOrder ?? 0)}</strong>
+          </div>
+          <div class="insight-chip">
+            <span>Largest Amplification</span>
+            <strong>${mostAmplified.amplification?.toFixed(2) ?? "1.00"}x</strong>
+          </div>
+          <div class="insight-chip">
+            <span>Most Amplified Tier</span>
+            <strong>${mostAmplified.nodeId ?? "n/a"}</strong>
+          </div>
+        </div>
+      </div>
+      <div class="hero-metrics">
+        <div class="metric-card">
+          <span>Total Profit</span>
+          <strong>${formatNumber(state.result?.aggregateMetrics.totalProfit ?? 0)}</strong>
+        </div>
+        <div class="metric-card">
+          <span>Total Shortage Cost</span>
+          <strong>${formatNumber(state.result?.aggregateMetrics.totalShortageCost ?? 0)}</strong>
+        </div>
+        <div class="metric-card">
+          <span>Total Holding Cost</span>
+          <strong>${formatNumber(state.result?.aggregateMetrics.totalHoldingCost ?? 0)}</strong>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function createDemandLabMarkup() {
+  const parsed = parseDemandSequence(state.demandSequenceText);
+  const previewText = parsed.error ? "Invalid sequence" : demandPreview(parsed.values);
+
+  return `
+    <section id="demand-lab" class="panel demand-lab">
+      <div class="section-heading">
+        <h2>Demand Playground</h2>
+        <span class="supporting">Enter customer demand directly to provoke the bullwhip effect.</span>
+      </div>
+      <p class="supporting">
+        Use a comma-separated sequence like <code>4, 4, 4, 8, 8, 8, 6, 6</code>. When you apply it,
+        the scenario switches to a fixed sequence demand model and sets the turn count to match.
+        <strong>Run Simulation</strong> also uses whatever sequence is currently in this box.
+      </p>
+      <div class="demand-builder-grid">
+        <label class="mini-field">
+          <span>Turns</span>
+          <input id="turn-count-input" type="number" min="1" step="1" value="${state.turnCount}" />
+        </label>
+        <label class="mini-field">
+          <span>Pattern</span>
+          <select id="demand-mode-select">
+            <option value="step" ${state.demandBuilder.mode === "step" ? "selected" : ""}>Step change</option>
+            <option value="constant" ${state.demandBuilder.mode === "constant" ? "selected" : ""}>Constant</option>
+            <option value="pulse" ${state.demandBuilder.mode === "pulse" ? "selected" : ""}>Single pulse</option>
+          </select>
+        </label>
+        <label class="mini-field">
+          <span>Base Demand</span>
+          <input id="builder-base-demand" type="number" min="0" step="1" value="${state.demandBuilder.baseDemand}" />
+        </label>
+        <label class="mini-field">
+          <span>Shock Demand</span>
+          <input id="builder-shock-demand" type="number" min="0" step="1" value="${state.demandBuilder.shockDemand}" />
+        </label>
+        <label class="mini-field">
+          <span>Shock Starts</span>
+          <input id="builder-shock-start" type="number" min="1" step="1" value="${state.demandBuilder.shockStartTurn}" />
+        </label>
+        <label class="mini-field">
+          <span>Recovery Demand</span>
+          <input id="builder-recovery-demand" type="number" min="0" step="1" value="${state.demandBuilder.recoveryDemand}" />
+        </label>
+        <label class="mini-field">
+          <span>Recovery Starts</span>
+          <input id="builder-recovery-start" type="number" min="1" step="1" value="${state.demandBuilder.recoveryStartTurn}" />
+        </label>
+      </div>
+      <label class="field">
+        <span>Customer Demand Sequence</span>
+        <textarea id="demand-sequence-input" class="demand-textarea" spellcheck="false">${state.demandSequenceText}</textarea>
+      </label>
+      <div id="demand-error" class="error-text"></div>
+      <div class="button-row">
+        <button id="generate-demand-sequence" class="button ghost">Generate Sequence</button>
+        <button id="apply-demand-sequence" class="button primary">Apply Sequence</button>
+        <button id="preset-classic-bullwhip" class="button ghost">Classic Bullwhip Preset</button>
+        <button id="preset-demand-shock" class="button ghost">Demand Shock Preset</button>
+        <button id="preset-demand-whipsaw" class="button ghost">Whipsaw Preset</button>
+      </div>
+      <div class="mini-note">
+        <span>Preview</span>
+        <strong>${previewText}</strong>
+      </div>
+    </section>
+  `;
+}
+
+function createChainBuilderMarkup() {
+  const scenario = getCurrentScenarioFromEditor();
+  const orderedNodes = scenario.nodes ?? [];
+  const roleOptions = ["retailer", "distributor", "wholesaler", "custom", "manufacturer"];
+  const selectedMoveNodeId = state.builderMoveNodeId;
+
+  const cards = orderedNodes
+    .map((node, index) => {
+      const isFirst = index === 0;
+      const isLast = index === orderedNodes.length - 1;
+      const nodeRoleOptions = roleOptions
+        .filter((role) => !isLast || role === "manufacturer")
+        .map(
+          (role) =>
+            `<option value="${role}" ${node.role === role ? "selected" : ""}>${role}</option>`
+        )
+        .join("");
+
+      return `
+        <div class="builder-slot" data-drop-index="${index}">
+          <span>${selectedMoveNodeId ? "Place tier here" : "Drop tier here"}</span>
+          ${
+            selectedMoveNodeId
+              ? `<button class="button ghost compact" data-place-index="${index}">Place Here</button>`
+              : ""
+          }
+        </div>
+        <article class="builder-node-card" draggable="true" data-builder-node-id="${node.id}">
+          <div class="builder-node-top">
+            <div>
+              <span class="builder-tier-label">${isFirst ? "Customer-facing tier" : isLast ? "Source tier" : `Middle tier ${index}`}</span>
+              <strong>${node.name}</strong>
+            </div>
+            <div class="builder-node-actions">
+              <button class="icon-button" data-shift-node-id="${node.id}" data-shift-offset="-1" ${isFirst ? "disabled" : ""} aria-label="Move tier left">←</button>
+              <button class="icon-button" data-shift-node-id="${node.id}" data-shift-offset="1" ${isLast ? "disabled" : ""} aria-label="Move tier right">→</button>
+              <button class="icon-button danger" data-remove-node-id="${node.id}" ${orderedNodes.length <= 2 ? "disabled" : ""} aria-label="Remove tier">×</button>
+            </div>
+          </div>
+          <div class="builder-node-form">
+            <label class="mini-field">
+              <span>Name</span>
+              <input data-node-id="${node.id}" data-field="name" type="text" value="${node.name}" />
+            </label>
+            <label class="mini-field">
+              <span>Role</span>
+              <select data-node-id="${node.id}" data-field="role" ${isLast ? "disabled" : ""}>
+                ${nodeRoleOptions}
+              </select>
+            </label>
+          </div>
+          <div class="builder-node-badges">
+            <span>Ship delay ${node.outboundLeadTime}</span>
+            ${isLast ? `<span>Production delay ${node.productionLeadTime ?? 0}</span>` : `<span>Orders from ${orderedNodes[index - 1]?.name ?? "consumer"}</span>`}
+          </div>
+          <div class="builder-inline-actions">
+            <button class="button ghost compact" data-pick-node-id="${node.id}">
+              ${selectedMoveNodeId === node.id ? "Cancel Move" : "Pick Up Tier"}
+            </button>
+            <button class="button ghost compact" data-insert-index="${index + 1}">
+              ${isLast ? "Add upstream tier" : "Insert tier after"}
+            </button>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  return `
+    <section id="chain-builder" class="panel">
+      <div class="section-heading">
+        <h2>Chain Builder</h2>
+        <button class="button ghost" data-insert-index="${orderedNodes.length}">Add Source Tier</button>
+      </div>
+      <p class="supporting">
+        Build the chain visually. Drag tiers to reorder them, or use the insert and remove controls to add more layers between the retailer and the source.
+        The builder keeps the topology as one linear chain so it still matches the Beer Game rules.
+      </p>
+      <div class="builder-lane">
+        ${cards}
+        <div class="builder-slot" data-drop-index="${orderedNodes.length}">
+          <span>${selectedMoveNodeId ? "Place at end" : "Drop at end"}</span>
+          ${
+            selectedMoveNodeId
+              ? `<button class="button ghost compact" data-place-index="${orderedNodes.length}">Place Here</button>`
+              : ""
+          }
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function createStrategyLabMarkup() {
+  const scenario = getCurrentScenarioFromEditor();
+  const cards = scenario.nodes.map((node) => getNodeStrategyControls(node)).join("");
+
+  return `
+    <section id="strategy-lab" class="panel strategy-lab">
+      <div class="section-heading">
+        <h2>Strategy Lab</h2>
+        <span class="supporting">Adjust delays, costs, and policies here instead of digging through raw JSON.</span>
+      </div>
+      <p class="supporting">
+        These controls update the scenario model directly. After you tweak a node's policy or lead times,
+        click <strong>Run Simulation</strong> to compare how the result changes. Forecast policies use only the demand history each node can observe.
+      </p>
+      <div class="strategy-grid-layout">${cards}</div>
+    </section>
+  `;
+}
+
+function createLibraryMarkup() {
+  const cards = state.savedSimulations.length
+    ? state.savedSimulations
+        .map(
+          (entry) => `
+            <article class="saved-run-card">
+              <div class="section-heading">
+                <h3>${entry.label}</h3>
+                <span>${entry.nodeCount} tiers · ${entry.turnCount} turns</span>
+              </div>
+              <p class="supporting">${new Date(entry.savedAt).toLocaleString()}</p>
+              <div class="button-row">
+                <button class="button primary compact" data-load-run-id="${entry.id}">Load</button>
+                <button class="button ghost compact" data-download-run-id="${entry.id}">Download</button>
+                <button class="button ghost compact" data-delete-run-id="${entry.id}">Delete</button>
+              </div>
+            </article>
+          `
+        )
+        .join("")
+    : `<p class="supporting">No saved simulations yet. Save a run here and it will stay available in this browser.</p>`;
+
+  return `
+    <section id="share-lab" class="panel">
+      <div class="section-heading">
+        <h2>Simulation Library</h2>
+        <span class="supporting">Save runs locally, reload them later, or download them as JSON.</span>
+      </div>
+      <div class="button-row">
+        <button id="save-sim" class="button primary">Save Simulation</button>
+        <button id="download-run" class="button ghost">Download Run JSON</button>
+        <button id="download-scenario" class="button ghost">Download Scenario JSON</button>
+        <button id="import-json" class="button ghost">Import JSON</button>
+        <input id="import-json-input" type="file" accept="application/json,.json" hidden />
+      </div>
+      ${state.libraryMessage ? `<div class="mini-note success-note"><strong>${state.libraryMessage}</strong></div>` : ""}
+      <div class="saved-run-grid">${cards}</div>
+    </section>
+  `;
+}
+
+function createShareMarkup() {
+  const scenarioName = state.scenario?.name || "Simulation";
+  return `
+    <section id="bullwhip-analysis" class="panel">
+      <div class="section-heading">
+        <h2>Share This Scenario</h2>
+        <span class="supporting">Use downloads for durable sharing, or copy JSON directly for quick collaboration.</span>
+      </div>
+      <div class="about-grid">
+        <article class="about-card">
+          <h3>Share with JSON</h3>
+          <p class="supporting">Download the scenario configuration if you want someone else to run the same model, or download a full run if you want to preserve both inputs and results.</p>
+          <div class="button-row">
+            <button id="copy-scenario-json" class="button ghost">Copy Scenario JSON</button>
+            <button id="copy-app-url" class="button ghost">Copy App URL</button>
+          </div>
+          ${state.shareMessage ? `<div class="mini-note success-note"><strong>${state.shareMessage}</strong></div>` : ""}
+        </article>
+        <article class="about-card">
+          <h3>Current Share State</h3>
+          <div class="mini-stats-grid">
+            <div>
+              <span>Scenario</span>
+              <strong>${scenarioName}</strong>
+            </div>
+            <div>
+              <span>Turns</span>
+              <strong>${formatNumber(state.turnCount)}</strong>
+            </div>
+            <div>
+              <span>Tiers</span>
+              <strong>${formatNumber(state.scenario?.nodes?.length ?? 0)}</strong>
+            </div>
+            <div>
+              <span>Persistence</span>
+              <strong>Local + JSON</strong>
+            </div>
+          </div>
+          <p class="supporting">For a classroom or public workshop, the most reliable flow today is: download scenario JSON, share the file, then let others import it in their own browser.</p>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function createFooterMarkup() {
+  return `
+    <footer class="site-footer">
+      <div>
+        <strong>Supply Chain Simulation</strong>
+        <p>Configurable Beer Game style simulator for exploring delays, policies, profit, and the bullwhip effect.</p>
+      </div>
+      <div class="footer-links">
+        <a href="#top">Top</a>
+        <a href="#about-sim">How It Works</a>
+        <a href="#share-lab">Share</a>
+      </div>
+    </footer>
+  `;
+}
+
+function createScenarioMarkup() {
+  return `
+    <section class="workspace-grid">
+      <div class="panel control-panel">
+        <div class="section-heading">
+          <h2>Scenario Config</h2>
+          <button id="reset-scenario" class="button ghost">Reset Default</button>
+        </div>
+        <p class="supporting">
+          Keep the JSON editor for full control, but use the strategy lab above for the most important parameters like delays,
+          shortage penalties, and policy settings.
+        </p>
+        <label class="field">
+          <span>Scenario JSON</span>
+          <textarea id="scenario-input" spellcheck="false">${state.scenarioText}</textarea>
+        </label>
+        <div id="scenario-error" class="error-text"></div>
+        <div class="button-row">
+          <button id="run-sim" class="button primary">Run Simulation</button>
+        </div>
+      </div>
+
+      <div class="panel playback-panel">
+        <div class="section-heading">
+          <h2>Playback</h2>
+          <span class="turn-badge">Turn ${state.selectedTurn} / ${state.result?.turns ?? 0}</span>
+        </div>
+        <label class="field compact">
+          <span>Selected Turn</span>
+          <input id="turn-slider" type="range" min="1" max="${state.result?.turns ?? 1}" value="${state.selectedTurn}" />
+        </label>
+        <div class="button-row">
+          <button id="prev-turn" class="button ghost">Previous</button>
+          <button id="next-turn" class="button ghost">Next</button>
+          <button id="play-turns" class="button primary">${state.autoplayTimer ? "Pause" : "Autoplay"}</button>
+        </div>
+        <label class="field compact">
+          <span>Autoplay Speed</span>
+          <select id="speed-select">
+            <option value="1200" ${state.speedMs === 1200 ? "selected" : ""}>Slow</option>
+            <option value="900" ${state.speedMs === 900 ? "selected" : ""}>Normal</option>
+            <option value="450" ${state.speedMs === 450 ? "selected" : ""}>Fast</option>
+          </select>
+        </label>
+        <div class="explanation-box">
+          <h3>How to See the Bullwhip</h3>
+          <p>
+            Enter a simple step change in customer demand, run the scenario, then compare order peaks in the bullwhip dashboard below.
+            Upstream tiers should usually spike harder than the retailer.
+          </p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function createComparisonMarkup() {
+  const compareMetrics = state.compareResult
+    ? getBullwhipMetricsForResult(state.compareResult)
+    : [];
+  const compareScenario = getCurrentComparisonScenarioFromEditor();
+  const compareCards = compareScenario.nodes
+    .map((node) => getNodeStrategyControls(node, { compare: true }))
+    .join("");
+
+  const rows = state.compareResult
+    ? state.result.orderedNodeIds.map((nodeId) => {
+        const leftNode = state.scenario.nodes.find((entry) => entry.id === nodeId);
+        const baseMetric = getBullwhipMetrics().find((entry) => entry.nodeId === nodeId);
+        const compareMetric = compareMetrics.find((entry) => entry.nodeId === nodeId);
+
+        return `
+          <tr>
+            <td>${leftNode?.name ?? nodeId}</td>
+            <td>${formatNumber(baseMetric?.peakOrder ?? 0)}</td>
+            <td>${(baseMetric?.amplification ?? 0).toFixed(2)}x</td>
+            <td>${formatNumber(compareMetric?.peakOrder ?? 0)}</td>
+            <td>${(compareMetric?.amplification ?? 0).toFixed(2)}x</td>
+          </tr>
+        `;
+      }).join("")
+    : "";
+
+  return `
+    <section class="panel comparison-lab">
+      <div class="section-heading">
+        <h2>Side-by-Side Comparison</h2>
+        <button id="clone-to-comparison" class="button ghost">Clone Current Into Variant</button>
+      </div>
+      <p class="supporting">
+        Use this variant scenario to compare two strategies or parameter sets side by side. The left run is your current main scenario; the right run is the comparison variant below.
+      </p>
+      <div class="comparison-grid">
+        <div class="comparison-card">
+          <h3>Current Scenario</h3>
+          <div class="comparison-metrics">
+            <div><span>Total Profit</span><strong>${formatNumber(state.result?.aggregateMetrics.totalProfit ?? 0)}</strong></div>
+            <div><span>Shortage Cost</span><strong>${formatNumber(state.result?.aggregateMetrics.totalShortageCost ?? 0)}</strong></div>
+          </div>
+        </div>
+        <div class="comparison-card">
+          <h3>Comparison Variant</h3>
+          <div class="comparison-metrics">
+            <div><span>Total Profit</span><strong>${formatNumber(state.compareResult?.aggregateMetrics.totalProfit ?? 0)}</strong></div>
+            <div><span>Shortage Cost</span><strong>${formatNumber(state.compareResult?.aggregateMetrics.totalShortageCost ?? 0)}</strong></div>
+          </div>
+        </div>
+      </div>
+        <div class="workspace-grid">
+        <div class="panel control-panel inset-panel">
+          <div class="section-heading"><h3>Variant Demand</h3></div>
+          <div class="demand-builder-grid">
+            <label class="mini-field">
+              <span>Turns</span>
+              <input id="compare-turn-count-input" type="number" min="1" step="1" value="${state.compareTurnCount}" />
+            </label>
+            <label class="mini-field">
+              <span>Pattern</span>
+              <select id="compare-demand-mode-select">
+                <option value="step" ${state.compareDemandBuilder.mode === "step" ? "selected" : ""}>Step change</option>
+                <option value="constant" ${state.compareDemandBuilder.mode === "constant" ? "selected" : ""}>Constant</option>
+                <option value="pulse" ${state.compareDemandBuilder.mode === "pulse" ? "selected" : ""}>Single pulse</option>
+              </select>
+            </label>
+            <label class="mini-field">
+              <span>Base Demand</span>
+              <input id="compare-builder-base-demand" type="number" min="0" step="1" value="${state.compareDemandBuilder.baseDemand}" />
+            </label>
+            <label class="mini-field">
+              <span>Shock Demand</span>
+              <input id="compare-builder-shock-demand" type="number" min="0" step="1" value="${state.compareDemandBuilder.shockDemand}" />
+            </label>
+            <label class="mini-field">
+              <span>Shock Starts</span>
+              <input id="compare-builder-shock-start" type="number" min="1" step="1" value="${state.compareDemandBuilder.shockStartTurn}" />
+            </label>
+            <label class="mini-field">
+              <span>Recovery Demand</span>
+              <input id="compare-builder-recovery-demand" type="number" min="0" step="1" value="${state.compareDemandBuilder.recoveryDemand}" />
+            </label>
+            <label class="mini-field">
+              <span>Recovery Starts</span>
+              <input id="compare-builder-recovery-start" type="number" min="1" step="1" value="${state.compareDemandBuilder.recoveryStartTurn}" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Comparison Demand Sequence</span>
+            <textarea id="compare-demand-sequence-input" class="demand-textarea" spellcheck="false">${state.compareDemandSequenceText}</textarea>
+          </label>
+          <div id="compare-demand-error" class="error-text"></div>
+          <div class="button-row">
+            <button id="generate-compare-demand-sequence" class="button ghost">Generate Variant Sequence</button>
+            <button id="run-comparison" class="button primary">Run Comparison</button>
+          </div>
+        </div>
+        <div class="panel control-panel inset-panel">
+          <div class="section-heading"><h3>Variant Strategy Editor</h3></div>
+          <p class="supporting">
+            Adjust the comparison variant directly here. Use the same policies, delays, and cost settings as the baseline editor, but applied only to the right-hand run.
+          </p>
+          <div class="strategy-grid-layout">${compareCards}</div>
+          <div id="compare-scenario-error" class="error-text"></div>
+        </div>
+      </div>
+      ${
+        state.compareResult
+          ? `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Node</th>
+                <th>Base Peak</th>
+                <th>Base Amp</th>
+                <th>Variant Peak</th>
+                <th>Variant Amp</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      `
+          : `
+        <p class="supporting">Run the comparison variant to see side-by-side bullwhip and economic results.</p>
+      `
+      }
+    </section>
+  `;
+}
+
+function createChainMarkup() {
+  if (!state.result) {
+    return "";
+  }
+
+  const cards = state.result.orderedNodeIds
+    .map((nodeId, index) => {
+      const turn = getTurnState(nodeId, state.selectedTurn);
+      const node = state.scenario.nodes.find((entry) => entry.id === nodeId);
+      return `
+        <article class="node-card">
+          <div class="node-card-header">
+            <div>
+              <p class="node-role">${node.role}</p>
+              <h3>${node.name}</h3>
+            </div>
+            <span class="node-index">${index + 1}</span>
+          </div>
+          <div class="node-stats">
+            <div><span>Order In</span><strong>${formatNumber(turn.orderReceived)}</strong></div>
+            <div><span>Shipment Out</span><strong>${formatNumber(turn.shipmentSent)}</strong></div>
+            <div><span>Inventory</span><strong>${formatNumber(turn.inventoryEnd)}</strong></div>
+            <div><span>Backlog</span><strong>${formatNumber(turn.backlogEnd)}</strong></div>
+            <div><span>Pipeline</span><strong>${formatNumber(turn.inboundPipelineTotalEnd)}</strong></div>
+            <div><span>Turn Profit</span><strong>${formatNumber(turn.turnProfit)}</strong></div>
+          </div>
+          <div class="strategy-note">
+            <span>Decision Strategy</span>
+            <strong>${getPolicyLabel(node.policyId)}</strong>
+            <p>${getNodeStrategyDescription(node)}</p>
+            <pre class="formula-inline">${getPolicyFormula(node)}</pre>
+          </div>
+          <p class="node-rationale">${turn.rationale || "No rationale recorded."}</p>
+        </article>
+      `;
+    })
+    .join('<div class="chain-arrow">→</div>');
+
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Chain View</h2>
+        <span class="supporting">Each node sees only its downstream order, local inventory, local backlog, and in-flight supply.</span>
+      </div>
+      <div class="chain-row">${cards}</div>
+    </section>
+  `;
+}
+
+function createBullwhipMarkup() {
+  if (!state.result) {
+    return "";
+  }
+
+  const metrics = getBullwhipMetrics();
+  const demandSeries = {
+    label: "customer demand",
+    values: metrics[0]?.demandHistory ?? [],
+    color: "#111111",
+  };
+  const orderSeries = metrics.map((metric, index) => ({
+    label: `${metric.nodeId} order up`,
+    values: metric.ordersPlaced,
+    color: ["#155f63", "#b56729", "#a63d40", "#2d4ea2", "#6d4aff"][index % 5],
+  }));
+  const inventorySeries = metrics.map((metric, index) => ({
+    label: `${metric.nodeId} inventory`,
+    values: metric.inventory,
+    color: ["#155f63", "#b56729", "#a63d40", "#2d4ea2", "#6d4aff"][index % 5],
+  }));
+  const backlogSeries = metrics.map((metric, index) => ({
+    label: `${metric.nodeId} backlog`,
+    values: metric.backlog,
+    color: ["#155f63", "#b56729", "#a63d40", "#2d4ea2", "#6d4aff"][index % 5],
+  }));
+
+  const cards = metrics
+    .map((metric) => {
+      const node = state.scenario.nodes.find((entry) => entry.id === metric.nodeId);
+      return `
+        <article class="chart-card bullwhip-card">
+          <div class="section-heading">
+            <h3>${node.name}</h3>
+            <span>Bullwhip score ${metric.bullwhipScore.toFixed(2)}</span>
+          </div>
+          <div class="amplification-row">
+            <span>Peak upstream order vs peak customer demand</span>
+            <strong>${metric.amplification.toFixed(2)}x</strong>
+          </div>
+          <div class="mini-stats-grid">
+            <div>
+              <span>Peak placed order</span>
+              <strong>${formatNumber(metric.peakOrder)}</strong>
+            </div>
+            <div>
+              <span>Order variance</span>
+              <strong>${metric.placedVariance.toFixed(1)}</strong>
+            </div>
+            <div>
+              <span>Peak pipeline</span>
+              <strong>${formatNumber(Math.max(...metric.pipelines, 0))}</strong>
+            </div>
+            <div>
+              <span>Peak inventory position</span>
+              <strong>${formatNumber(Math.max(...metric.inventoryPosition, 0))}</strong>
+            </div>
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Bullwhip Analysis</h2>
+        <span class="supporting">Look at order amplification, inventory oscillation, backlog propagation, and variance amplification together.</span>
+      </div>
+      <div class="combined-bullwhip">
+        <div class="section-heading">
+          <h3>Customer Demand vs Orders Placed</h3>
+          <span>Demand is the cause; upstream orders are the response</span>
+        </div>
+        ${multiSeriesChartSvg({ series: [demandSeries, ...orderSeries] })}
+        <p class="supporting chart-caption">
+          This is the clearest bullwhip signal: if upstream order lines rise more sharply than customer demand, the chain is amplifying demand noise.
+        </p>
+        <div class="comparison-legend">
+          ${[demandSeries, ...orderSeries]
+            .map(
+              (entry) => `
+            <div class="legend-chip">
+              <span class="legend-dot" style="background:${entry.color}"></span>
+              <strong>${entry.label}</strong>
+            </div>
+            `
+            )
+            .join("")}
+        </div>
+      </div>
+      <div class="combined-bullwhip">
+        <div class="section-heading">
+          <h3>Inventory Oscillation By Tier</h3>
+          <span>Whip shows up as overshoot and correction in stock</span>
+        </div>
+        ${multiSeriesChartSvg({ series: inventorySeries })}
+      </div>
+      <div class="combined-bullwhip">
+        <div class="section-heading">
+          <h3>Backlog Oscillation By Tier</h3>
+          <span>Ripple propagation often appears here before inventory recovers</span>
+        </div>
+        ${multiSeriesChartSvg({ series: backlogSeries })}
+      </div>
+      <div class="chart-grid">${cards}</div>
+    </section>
+  `;
+}
+
+function createChartsMarkup() {
+  if (!state.result) {
+    return "";
+  }
+
+  const chartCards = state.result.orderedNodeIds
+    .map((nodeId) => {
+      const history = state.result.nodeHistory[nodeId];
+      const node = state.scenario.nodes.find((entry) => entry.id === nodeId);
+      return `
+        <article class="chart-card">
+          <div class="section-heading">
+            <h3>${node.name}</h3>
+            <span>${history.length} turns</span>
+          </div>
+          <div class="mini-chart">
+            <p>Inventory</p>
+            ${chartSvg({
+              values: sumHistoryMetric(history, "inventoryEnd"),
+              stroke: "#0f6c5a",
+              fill: "rgba(15, 108, 90, 0.16)",
+            })}
+          </div>
+          <div class="mini-chart">
+            <p>Backlog</p>
+            ${chartSvg({
+              values: sumHistoryMetric(history, "backlogEnd"),
+              stroke: "#a63d40",
+              fill: "rgba(166, 61, 64, 0.16)",
+            })}
+          </div>
+          <div class="mini-chart">
+            <p>Cumulative Profit</p>
+            ${chartSvg({
+              values: sumHistoryMetric(history, "cumulativeProfit"),
+              stroke: "#2d4ea2",
+              fill: "rgba(45, 78, 162, 0.16)",
+            })}
+          </div>
+        </article>
+      `;
+    })
+    .join("");
+
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Operations Dashboard</h2>
+        <span class="supporting">Inventory, backlog, and economics for each tier across the run.</span>
+      </div>
+      <div class="chart-grid">${chartCards}</div>
+    </section>
+  `;
+}
+
+function createTurnTableMarkup() {
+  if (!state.result) {
+    return "";
+  }
+
+  const rows = state.result.orderedNodeIds
+    .map((nodeId) => {
+      const turn = getTurnState(nodeId, state.selectedTurn);
+      const node = state.scenario.nodes.find((entry) => entry.id === nodeId);
+        return `
+          <tr>
+            <td>${node.name}</td>
+            <td>${formatNumber(turn.arrivalsReceived)}</td>
+            <td>${formatNumber(turn.orderReceived)}</td>
+            <td>${formatNumber(turn.owedDemand)}</td>
+            <td>${formatNumber(turn.shipmentSent)}</td>
+            <td>${formatNumber(turn.replenishmentOrderPlaced || turn.productionOrderPlaced || 0)}</td>
+            <td>${formatNumber(turn.inboundPipelineTotalEnd)}</td>
+            <td>${formatNumber(turn.inventoryEnd + turn.inboundPipelineTotalEnd - turn.backlogEnd)}</td>
+            <td>${formatNumber(turn.holdingCost)}</td>
+            <td>${formatNumber(turn.shortageCost)}</td>
+          </tr>
+        `;
+    })
+    .join("");
+
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Turn Detail</h2>
+        <span class="turn-badge">Showing Turn ${state.selectedTurn}</span>
+      </div>
+      <p class="supporting">Audit one turn at a time to see where shortages, inventory, and ordering decisions came from.</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Arrivals</th>
+              <th>Order In</th>
+                <th>Owed</th>
+                <th>Ship Out</th>
+                <th>Order Up</th>
+                <th>Pipeline End</th>
+                <th>Inv Position</th>
+                <th>Holding Cost</th>
+                <th>Shortage Cost</th>
+              </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function bindEvents() {
+  document.querySelector("#scenario-input")?.addEventListener("input", (event) => {
+    state.scenarioText = event.target.value;
+  });
+
+  document.querySelectorAll("[data-insert-index]").forEach((element) => {
+    element.addEventListener("click", () => {
+      stopAutoplay();
+      insertNodeAt(Number(element.dataset.insertIndex));
+    });
+  });
+
+  document.querySelectorAll("[data-remove-node-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      stopAutoplay();
+      removeNode(element.dataset.removeNodeId);
+    });
+  });
+
+  document.querySelectorAll("[data-shift-node-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      stopAutoplay();
+      moveNode(element.dataset.shiftNodeId, Number(element.dataset.shiftOffset));
+    });
+  });
+
+  document.querySelectorAll("[data-builder-node-id]").forEach((element) => {
+    element.addEventListener("dragstart", (event) => {
+      state.dragNodeId = element.dataset.builderNodeId;
+      state.builderMoveNodeId = element.dataset.builderNodeId;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", state.dragNodeId);
+    });
+
+    element.addEventListener("dragend", () => {
+      state.dragNodeId = "";
+    });
+  });
+
+  document.querySelectorAll("[data-pick-node-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      const nodeId = element.dataset.pickNodeId;
+      state.builderMoveNodeId = state.builderMoveNodeId === nodeId ? "" : nodeId;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-place-index]").forEach((element) => {
+    element.addEventListener("click", () => {
+      if (!state.builderMoveNodeId) {
+        return;
+      }
+      stopAutoplay();
+      reorderNode(state.builderMoveNodeId, Number(element.dataset.placeIndex));
+    });
+  });
+
+  document.querySelectorAll("[data-drop-index]").forEach((element) => {
+    element.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    });
+
+    element.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const nodeId = event.dataTransfer.getData("text/plain") || state.dragNodeId;
+      if (!nodeId) {
+        return;
+      }
+      stopAutoplay();
+      reorderNode(nodeId, Number(element.dataset.dropIndex));
+      state.dragNodeId = "";
+    });
+  });
+
+  document.querySelectorAll("[data-node-id][data-field]").forEach((element) => {
+    element.addEventListener("change", (event) => {
+      const target = event.target;
+      applyNodeFieldChange(target.dataset.nodeId, target.dataset.field, target.value);
+    });
+  });
+
+  document.querySelectorAll("[data-compare-node-id][data-compare-field]").forEach((element) => {
+    element.addEventListener("change", (event) => {
+      const target = event.target;
+      applyComparisonNodeFieldChange(
+        target.dataset.compareNodeId,
+        target.dataset.compareField,
+        target.value
+      );
+    });
+  });
+
+  document.querySelector("#demand-sequence-input")?.addEventListener("input", (event) => {
+    state.demandSequenceText = event.target.value;
+  });
+
+  document.querySelector("#turn-count-input")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "turnCount", event.target.value);
+  });
+
+  document.querySelector("#demand-mode-select")?.addEventListener("change", (event) => {
+    updateDemandBuilderField(false, "mode", event.target.value);
+  });
+
+  document.querySelector("#builder-base-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "baseDemand", event.target.value);
+  });
+
+  document.querySelector("#builder-shock-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "shockDemand", event.target.value);
+  });
+
+  document.querySelector("#builder-shock-start")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "shockStartTurn", event.target.value);
+  });
+
+  document.querySelector("#builder-recovery-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "recoveryDemand", event.target.value);
+  });
+
+  document.querySelector("#builder-recovery-start")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(false, "recoveryStartTurn", event.target.value);
+  });
+
+  document.querySelector("#compare-demand-sequence-input")?.addEventListener("input", (event) => {
+    state.compareDemandSequenceText = event.target.value;
+  });
+
+  document.querySelector("#compare-turn-count-input")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "turnCount", event.target.value);
+  });
+
+  document.querySelector("#compare-demand-mode-select")?.addEventListener("change", (event) => {
+    updateDemandBuilderField(true, "mode", event.target.value);
+  });
+
+  document.querySelector("#compare-builder-base-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "baseDemand", event.target.value);
+  });
+
+  document.querySelector("#compare-builder-shock-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "shockDemand", event.target.value);
+  });
+
+  document.querySelector("#compare-builder-shock-start")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "shockStartTurn", event.target.value);
+  });
+
+  document.querySelector("#compare-builder-recovery-demand")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "recoveryDemand", event.target.value);
+  });
+
+  document.querySelector("#compare-builder-recovery-start")?.addEventListener("input", (event) => {
+    updateDemandBuilderField(true, "recoveryStartTurn", event.target.value);
+  });
+
+  document.querySelector("#apply-demand-sequence")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyDemandSequenceFromInput();
+  });
+
+  document.querySelector("#generate-demand-sequence")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyGeneratedDemand(false);
+  });
+
+  document.querySelector("#preset-demand-shock")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyDemandShockPreset();
+  });
+
+  document.querySelector("#preset-classic-bullwhip")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyClassicBullwhipPreset();
+  });
+
+  document.querySelector("#preset-demand-whipsaw")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyDemandWhipsawPreset();
+  });
+
+  document.querySelector("#run-sim")?.addEventListener("click", () => {
+    stopAutoplay();
+    runCurrentScenario();
+  });
+
+  document.querySelector("#run-comparison")?.addEventListener("click", () => {
+    stopAutoplay();
+    runComparisonScenario();
+  });
+
+  document.querySelector("#generate-compare-demand-sequence")?.addEventListener("click", () => {
+    stopAutoplay();
+    applyGeneratedDemand(true);
+  });
+
+  document.querySelector("#clone-to-comparison")?.addEventListener("click", () => {
+    cloneCurrentToComparison();
+  });
+
+  document.querySelector("#reset-scenario")?.addEventListener("click", () => {
+    resetScenarioAndDemand();
+  });
+
+  document.querySelector("#save-sim")?.addEventListener("click", () => {
+    stopAutoplay();
+    saveCurrentSimulation();
+  });
+
+  document.querySelector("#download-run")?.addEventListener("click", () => {
+    stopAutoplay();
+    downloadCurrentSimulation();
+  });
+
+  document.querySelector("#download-scenario")?.addEventListener("click", () => {
+    stopAutoplay();
+    downloadCurrentScenario();
+  });
+
+  document.querySelector("#copy-scenario-json")?.addEventListener("click", async () => {
+    const built = buildScenarioFromEditors();
+    if (built.scenarioError || built.demandError) {
+      state.shareMessage = built.scenarioError || built.demandError;
+      render();
+      return;
+    }
+    await copyTextToClipboard(JSON.stringify(built.scenario, null, 2), "Copied scenario JSON to the clipboard.");
+  });
+
+  document.querySelector("#copy-app-url")?.addEventListener("click", async () => {
+    await copyTextToClipboard(window.location.href, "Copied the app URL to the clipboard.");
+  });
+
+  document.querySelector("#import-json")?.addEventListener("click", () => {
+    document.querySelector("#import-json-input")?.click();
+  });
+
+  document.querySelector("#import-json-input")?.addEventListener("change", async (event) => {
+    const [file] = event.target.files ?? [];
+    await importSimulationFile(file);
+    event.target.value = "";
+  });
+
+  document.querySelectorAll("[data-load-run-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      stopAutoplay();
+      loadSavedSimulation(element.dataset.loadRunId);
+    });
+  });
+
+  document.querySelectorAll("[data-download-run-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      downloadSavedSimulation(element.dataset.downloadRunId);
+    });
+  });
+
+  document.querySelectorAll("[data-delete-run-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      deleteSavedSimulation(element.dataset.deleteRunId);
+    });
+  });
+
+  document.querySelector("#turn-slider")?.addEventListener("input", (event) => {
+    state.selectedTurn = Number(event.target.value);
+    render();
+  });
+
+  document.querySelector("#prev-turn")?.addEventListener("click", () => {
+    stopAutoplay();
+    state.selectedTurn = Math.max(1, state.selectedTurn - 1);
+    render();
+  });
+
+  document.querySelector("#next-turn")?.addEventListener("click", () => {
+    stopAutoplay();
+    state.selectedTurn = Math.min(state.result.turns, state.selectedTurn + 1);
+    render();
+  });
+
+  document.querySelector("#play-turns")?.addEventListener("click", () => {
+    if (state.autoplayTimer) {
+      stopAutoplay();
+      render();
+      return;
+    }
+    startAutoplay();
+    render();
+  });
+
+  document.querySelector("#speed-select")?.addEventListener("change", (event) => {
+    state.speedMs = Number(event.target.value);
+    if (state.autoplayTimer) {
+      startAutoplay();
+    }
+  });
+}
+
+function render() {
+  if (!state.result) {
+    state.result = runSimulation(state.scenario);
+  }
+
+  app.innerHTML = `
+    <main class="page-shell">
+      ${createTopNavMarkup()}
+      ${createHeroMarkup()}
+      ${createAboutMarkup()}
+      ${createDemandLabMarkup()}
+      ${createChainBuilderMarkup()}
+      ${createStrategyLabMarkup()}
+      ${createScenarioMarkup()}
+      ${createShareMarkup()}
+      ${createLibraryMarkup()}
+      ${createComparisonMarkup()}
+      ${createChainMarkup()}
+      ${createBullwhipMarkup()}
+      ${createChartsMarkup()}
+      ${createTurnTableMarkup()}
+      ${createFooterMarkup()}
+    </main>
+  `;
+
+  bindEvents();
+}
+
+function showFatalError(error) {
+  const message = error instanceof Error ? `${error.message}\n\n${error.stack ?? ""}` : String(error);
+  app.innerHTML = `
+    <main class="page-shell">
+      <section class="panel">
+        <h1>Preview failed to load</h1>
+        <p class="supporting">
+          The standalone app hit a startup error. A hard refresh should pick up the latest code.
+        </p>
+        <div class="fatal-error">${message}</div>
+      </section>
+    </main>
+  `;
+}
+
+window.addEventListener("error", (event) => {
+  showFatalError(event.error ?? event.message);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  showFatalError(event.reason);
+});
+
+try {
+  render();
+} catch (error) {
+  showFatalError(error);
+}

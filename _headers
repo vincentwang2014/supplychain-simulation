@@ -1,0 +1,14 @@
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/preview.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/preview-v20260425*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/src/app/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/src/simulation/*
+  Cache-Control: public, max-age=0, must-revalidate
