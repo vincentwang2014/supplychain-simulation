@@ -1,4 +1,4 @@
-import { beerGameScenario } from "../simulation/fixtures/beerGame.js?v=20260425s";
+import { beerGameScenario } from "../simulation/fixtures/beerGame.js?v=20260426a";
 
 export function createDefaultScenario() {
   const base = structuredClone(beerGameScenario);

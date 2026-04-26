@@ -1,9 +1,9 @@
-import { runSimulation } from "../simulation/engine/runSimulation.js?v=20260425s";
-import { createDefaultScenario } from "./defaultScenario.js?v=20260425s";
-import { formatNumber, sumHistoryMetric } from "./utils.js?v=20260425s";
+import { runSimulation } from "../simulation/engine/runSimulation.js?v=20260426a";
+import { createDefaultScenario } from "./defaultScenario.js?v=20260426a";
+import { formatNumber, sumHistoryMetric } from "./utils.js?v=20260426a";
 
 const app = document.querySelector("#app");
-const VERSION = "20260425s";
+const VERSION = "20260426a";
 const SAVED_RUNS_KEY = "supply-chain-saved-simulations-v1";
 const defaultScenario = createDefaultScenario();
 
@@ -2171,22 +2171,6 @@ function createLandingHeroMarkup() {
         </div>
       </div>
       <div class="landing-highlight-grid">
-        <div class="highlight-card feature-card">
-          <span>${t("customerPeak")}</span>
-          <strong>${formatNumber(bullwhipMetrics[0]?.peakOrder ?? 0)}</strong>
-        </div>
-        <div class="highlight-card feature-card">
-          <span>${t("largestAmp")}</span>
-          <strong>${mostAmplified.amplification?.toFixed(2) ?? "1.00"}x</strong>
-        </div>
-        <div class="highlight-card feature-card">
-          <span>${t("mostAmpTier")}</span>
-          <strong>${mostAmplified.nodeId ?? "n/a"}</strong>
-        </div>
-        <div class="highlight-card stat-ribbon">
-          <span>${t("currentRun")}</span>
-          <p>${t("currentRunText")}</p>
-        </div>
         <div class="highlight-card live-preview-card">
           <div class="section-heading">
             <h3>${t("latestRunPreview")}</h3>
@@ -2194,6 +2178,24 @@ function createLandingHeroMarkup() {
           </div>
           ${multiSeriesChartSvg({ series: landingSeries, width: 560, height: 220 })}
           <p class="supporting">${t("latestPreviewText")}</p>
+        </div>
+        <div class="highlight-card hero-note-card compact-note-card">
+          <span>${t("currentRun")}</span>
+          <p>${t("currentRunText")}</p>
+          <div class="mini-stats-grid">
+            <div>
+              <span>${t("customerPeak")}</span>
+              <strong>${formatNumber(bullwhipMetrics[0]?.peakOrder ?? 0)}</strong>
+            </div>
+            <div>
+              <span>${t("largestAmp")}</span>
+              <strong>${mostAmplified.amplification?.toFixed(2) ?? "1.00"}x</strong>
+            </div>
+            <div>
+              <span>${t("mostAmpTier")}</span>
+              <strong>${mostAmplified.nodeId ?? "n/a"}</strong>
+            </div>
+          </div>
         </div>
       </div>
     </section>
