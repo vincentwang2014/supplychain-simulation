@@ -1,9 +1,9 @@
-import { runSimulation } from "../simulation/engine/runSimulation.js?v=20260425p";
-import { createDefaultScenario } from "./defaultScenario.js?v=20260425p";
-import { formatNumber, sumHistoryMetric } from "./utils.js?v=20260425p";
+import { runSimulation } from "../simulation/engine/runSimulation.js?v=20260425s";
+import { createDefaultScenario } from "./defaultScenario.js?v=20260425s";
+import { formatNumber, sumHistoryMetric } from "./utils.js?v=20260425s";
 
 const app = document.querySelector("#app");
-const VERSION = "20260425p";
+const VERSION = "20260425s";
 const SAVED_RUNS_KEY = "supply-chain-saved-simulations-v1";
 const defaultScenario = createDefaultScenario();
 
@@ -49,7 +49,213 @@ const state = {
   dragNodeId: "",
   builderMoveNodeId: "",
   shareMessage: "",
+  activePage: "home",
+  language: "en",
 };
+
+const translations = {
+  en: {
+    brand: "Supply Chain Simulation",
+    navHome: "Home",
+    navModel: "Model",
+    navRun: "Run",
+    navShare: "Share",
+    landingEyebrow: "Supply Chain Studio",
+    landingTitle: "Watch demand ripple upstream.",
+    landingLead:
+      "Build a chain, inject demand shocks, tune replenishment logic, and watch the bullwhip effect unfold through orders, inventory, backlog, and profit.",
+    bullet1: "Configurable demand and delays",
+    bullet2: "Forecast, base-stock, and profit-aware policies",
+    bullet3: "Playback, comparison, save, and share tools",
+    ctaModel: "Start Modeling",
+    ctaRun: "Open Analysis",
+    ctaShare: "Share Scenarios",
+    customerPeak: "Customer Peak",
+    largestAmp: "Largest Amplification",
+    mostAmpTier: "Most Amplified Tier",
+    currentRun: "Current Run",
+    currentRunText: "Use the tabs above to move between modeling, analysis, and sharing instead of scrolling through one long page.",
+    latestRunPreview: "Latest Run Preview",
+    turns: "turns",
+    latestPreviewText: "This preview uses the most recent run so the landing page shows a real customer-demand versus upstream-order snapshot.",
+    aboutTitle: "How It Works",
+    aboutLead: "A configurable Beer Game style simulator for teaching, workshops, and what-if experiments.",
+    about1Title: "Local Information Only",
+    about1Body: "Each tier sees only its downstream order, local inventory, backlog, and delayed inbound supply. No one gets full-system visibility while deciding what to ship or order.",
+    about2Title: "Delay Creates Distortion",
+    about2Body: "Shipment and production delays create lag. That lag is what turns a modest customer shock into amplified waves of orders, backlog, and inventory upstream.",
+    about3Title: "Strategy Shapes the Outcome",
+    about3Body: "You can tune each node's policy, sentiment, service bias, and delays, then compare how conservative versus aggressive decisions change profit and the bullwhip effect.",
+    howToTitle: "How To Use It",
+    howToLead: "A short path for first-time users.",
+    step1Title: "Shape Demand",
+    step1Body: "Start in Model. Create a customer demand sequence or use a preset like Classic Bullwhip.",
+    step2Title: "Tune The Chain",
+    step2Body: "Add layers, change delays, and edit each node's strategy so you can test conservative versus aggressive behavior.",
+    step3Title: "Run And Compare",
+    step3Body: "Open Run to inspect playback, bullwhip charts, inventory oscillation, backlog, and turn-by-turn detail.",
+    pageModelTitle: "Model Builder",
+    pageModelLead: "Shape demand, build the chain, and tune each node before you run the simulation.",
+    pageRunTitle: "Run And Analyze",
+    pageRunLead: "Replay the scenario, inspect each tier, and compare bullwhip behavior across the chain.",
+    pageShareTitle: "Share And Save",
+    pageShareLead: "Store runs locally, export JSON, and hand off scenarios to others without exposing the full project.",
+    footerText: "Configurable Beer Game style simulator for exploring delays, policies, profit, and the bullwhip effect.",
+    whyUseful: "Why This Is Useful",
+    whyUsefulText: "Use it for teaching, workshops, and strategy experiments where you want to explain how local decisions and delayed information create amplification upstream.",
+  },
+  zh: {
+    brand: "供应链模拟器",
+    navHome: "首页",
+    navModel: "建模",
+    navRun: "运行",
+    navShare: "分享",
+    landingEyebrow: "供应链工作室",
+    landingTitle: "看需求波动如何层层放大。",
+    landingLead: "构建供应链层级，注入需求冲击，调整补货策略，并观察牛鞭效应如何在订单、库存、缺货与利润中展开。",
+    bullet1: "可配置的需求与延迟",
+    bullet2: "预测、基准库存与利润导向策略",
+    bullet3: "回放、对比、保存与分享",
+    ctaModel: "开始建模",
+    ctaRun: "打开分析",
+    ctaShare: "分享场景",
+    customerPeak: "客户需求峰值",
+    largestAmp: "最大放大倍数",
+    mostAmpTier: "放大最明显层级",
+    currentRun: "当前运行",
+    currentRunText: "使用上方标签在建模、分析和分享之间切换，而不必滚动浏览整个页面。",
+    latestRunPreview: "最近运行预览",
+    turns: "轮",
+    latestPreviewText: "这个预览直接使用最近一次运行的数据，因此首页展示的是实时的需求与上游订货快照。",
+    aboutTitle: "工作原理",
+    aboutLead: "这是一个适用于教学、研讨和情景推演的可配置啤酒游戏模拟器。",
+    about1Title: "只用本地信息决策",
+    about1Body: "每一层只能看到下游订单、本地库存、缺货以及延迟到达的在途供应，无法看到全局信息。",
+    about2Title: "延迟会放大波动",
+    about2Body: "运输和生产延迟会造成反应滞后，而这种滞后会把轻微的需求变化放大成上游更强的订单、缺货和库存波动。",
+    about3Title: "策略决定结果",
+    about3Body: "你可以调整每个节点的策略、情绪系数、服务偏好和延迟，并比较保守与激进决策对利润和牛鞭效应的影响。",
+    howToTitle: "使用方法",
+    howToLead: "给第一次使用者的一条简明路径。",
+    step1Title: "设定需求",
+    step1Body: "先进入“建模”，创建客户需求序列，或者直接使用经典牛鞭预设。",
+    step2Title: "调整链条",
+    step2Body: "增加层级、修改延迟、编辑各节点策略，以测试保守与激进行为的差异。",
+    step3Title: "运行并比较",
+    step3Body: "进入“运行”查看回放、牛鞭图表、库存振荡、缺货变化以及逐轮明细。",
+    pageModelTitle: "模型构建",
+    pageModelLead: "在运行模拟前，先定义需求、搭建链条并调整每个节点的决策逻辑。",
+    pageRunTitle: "运行与分析",
+    pageRunLead: "回放场景、查看各层级状态，并比较牛鞭效应在整条链上的表现。",
+    pageShareTitle: "保存与分享",
+    pageShareLead: "把结果保存在本地，导出 JSON，并把场景交给其他人继续使用。",
+    footerText: "一个用于探索延迟、策略、利润与牛鞭效应的可配置啤酒游戏模拟器。",
+    whyUseful: "它适合做什么",
+    whyUsefulText: "适合教学、工作坊和策略试验，用来解释局部决策与延迟信息如何在供应链中放大波动。",
+  },
+  fr: {
+    brand: "Simulation de chaîne logistique",
+    navHome: "Accueil",
+    navModel: "Modèle",
+    navRun: "Analyse",
+    navShare: "Partager",
+    landingEyebrow: "Studio Supply Chain",
+    landingTitle: "Regardez la demande se propager vers l’amont.",
+    landingLead: "Construisez une chaîne, injectez des chocs de demande, ajustez la logique de réapprovisionnement et observez l’effet coup de fouet dans les commandes, les stocks, les retards et le profit.",
+    bullet1: "Demande et délais configurables",
+    bullet2: "Politiques prévisionnelles, base-stock et orientées profit",
+    bullet3: "Lecture, comparaison, sauvegarde et partage",
+    ctaModel: "Commencer",
+    ctaRun: "Ouvrir l’analyse",
+    ctaShare: "Partager un scénario",
+    customerPeak: "Pic de demande",
+    largestAmp: "Amplification maximale",
+    mostAmpTier: "Niveau le plus amplifié",
+    currentRun: "Simulation actuelle",
+    currentRunText: "Utilisez les onglets ci-dessus pour passer entre modélisation, analyse et partage sans faire défiler toute la page.",
+    latestRunPreview: "Aperçu de la dernière simulation",
+    turns: "tours",
+    latestPreviewText: "Cet aperçu utilise la simulation la plus récente pour montrer un vrai instantané de la demande client et des commandes amont.",
+    aboutTitle: "Comment cela fonctionne",
+    aboutLead: "Un simulateur Beer Game configurable pour l’enseignement, les ateliers et les expériences de type what-if.",
+    about1Title: "Information locale uniquement",
+    about1Body: "Chaque niveau ne voit que la commande aval, son stock local, son backlog et les arrivées différées. Personne n’a une vue complète du système.",
+    about2Title: "Le délai amplifie la variation",
+    about2Body: "Les délais de transport et de production créent un décalage, et ce décalage transforme un petit choc de demande en oscillations amplifiées en amont.",
+    about3Title: "La stratégie change le résultat",
+    about3Body: "Vous pouvez ajuster la politique, le biais, le niveau de service et les délais de chaque nœud pour comparer des comportements prudents et agressifs.",
+    howToTitle: "Comment l’utiliser",
+    howToLead: "Un parcours court pour les nouveaux utilisateurs.",
+    step1Title: "Définir la demande",
+    step1Body: "Commencez dans Modèle. Créez une séquence de demande client ou utilisez un preset comme Classic Bullwhip.",
+    step2Title: "Régler la chaîne",
+    step2Body: "Ajoutez des niveaux, changez les délais et modifiez les stratégies de chaque nœud.",
+    step3Title: "Lancer et comparer",
+    step3Body: "Ouvrez Analyse pour voir la lecture, les graphiques, les oscillations de stock et le détail tour par tour.",
+    pageModelTitle: "Constructeur de modèle",
+    pageModelLead: "Définissez la demande, construisez la chaîne et réglez chaque nœud avant d’exécuter la simulation.",
+    pageRunTitle: "Exécuter et analyser",
+    pageRunLead: "Relisez le scénario, inspectez chaque niveau et comparez l’effet coup de fouet sur toute la chaîne.",
+    pageShareTitle: "Partager et sauvegarder",
+    pageShareLead: "Enregistrez localement, exportez en JSON et transmettez les scénarios à d’autres personnes.",
+    footerText: "Un simulateur Beer Game configurable pour explorer les délais, les politiques, le profit et l’effet coup de fouet.",
+    whyUseful: "Pourquoi c’est utile",
+    whyUsefulText: "Idéal pour l’enseignement, les ateliers et les expériences stratégiques où l’on veut expliquer l’amplification des signaux.",
+  },
+  ja: {
+    brand: "サプライチェーン・シミュレーター",
+    navHome: "ホーム",
+    navModel: "モデル",
+    navRun: "分析",
+    navShare: "共有",
+    landingEyebrow: "サプライチェーン・スタジオ",
+    landingTitle: "需要の波が上流へどう広がるかを見てみましょう。",
+    landingLead: "チェーンを構築し、需要ショックを与え、補充ロジックを調整しながら、注文・在庫・欠品・利益に現れるブルウィップ効果を観察できます。",
+    bullet1: "需要と遅延を柔軟に設定",
+    bullet2: "予測型・ベースストック型・利益重視型の戦略",
+    bullet3: "再生、比較、保存、共有に対応",
+    ctaModel: "モデルを作る",
+    ctaRun: "分析を見る",
+    ctaShare: "シナリオを共有",
+    customerPeak: "需要ピーク",
+    largestAmp: "最大増幅",
+    mostAmpTier: "最も増幅した層",
+    currentRun: "現在の実行",
+    currentRunText: "上のタブでモデリング、分析、共有を切り替えれば、長い1ページをスクロールする必要はありません。",
+    latestRunPreview: "最新実行プレビュー",
+    turns: "ターン",
+    latestPreviewText: "このプレビューは最新の実行結果を使い、顧客需要と上流注文の実際のスナップショットを表示します。",
+    aboutTitle: "使い方の考え方",
+    aboutLead: "教育、ワークショップ、仮説検証に使える設定可能なビアゲーム型シミュレーターです。",
+    about1Title: "見える情報はローカルのみ",
+    about1Body: "各層が見えるのは下流注文、自分の在庫、バックログ、そして遅れて届く供給だけです。全体最適の視点はありません。",
+    about2Title: "遅延がゆがみを生む",
+    about2Body: "輸送や生産の遅延が反応のラグを生み、そのラグが小さな需要変化を上流の大きな振れへ変えていきます。",
+    about3Title: "戦略で結果が変わる",
+    about3Body: "各ノードの戦略、バイアス、サービスレベル、遅延を調整し、保守的な意思決定と攻撃的な意思決定を比較できます。",
+    howToTitle: "使い方",
+    howToLead: "初めて使う人向けの短い流れです。",
+    step1Title: "需要を作る",
+    step1Body: "まずモデル画面で需要系列を作るか、Classic Bullwhip のようなプリセットを使います。",
+    step2Title: "チェーンを調整する",
+    step2Body: "層を追加し、遅延を変え、各ノードの戦略を編集して行動の違いを試します。",
+    step3Title: "実行して比較する",
+    step3Body: "分析画面で再生、ブルウィップ・チャート、在庫振動、バックログ、ターン詳細を確認します。",
+    pageModelTitle: "モデル構築",
+    pageModelLead: "需要、チェーン構造、各ノードのロジックを調整してからシミュレーションを実行します。",
+    pageRunTitle: "実行と分析",
+    pageRunLead: "シナリオを再生し、各層の状態を見ながらブルウィップの広がりを比較します。",
+    pageShareTitle: "保存と共有",
+    pageShareLead: "結果をローカル保存し、JSON を書き出し、他の人へシナリオを渡せます。",
+    footerText: "遅延、戦略、利益、ブルウィップ効果を探るための設定可能なビアゲーム型シミュレーターです。",
+    whyUseful: "何に役立つか",
+    whyUsefulText: "局所的な意思決定と遅れた情報がどのように増幅を生むかを説明したい教育や戦略ワークに向いています。",
+  },
+};
+
+function t(key) {
+  return translations[state.language]?.[key] ?? translations.en[key] ?? key;
+}
 
 function safeParseScenario(text) {
   try {
@@ -708,24 +914,44 @@ async function importSimulationFile(file) {
   render();
 }
 
-function createTopNavMarkup() {
+function createTopNavMarkupLegacy() {
+  const pages = [
+    { id: "home", label: t("navHome") },
+    { id: "model", label: t("navModel") },
+    { id: "run", label: t("navRun") },
+    { id: "share", label: t("navShare") },
+  ];
+
   return `
     <section class="top-nav-shell">
       <div class="top-nav">
-        <a class="brand-mark" href="#top">Supply Chain Simulation</a>
+        <button class="brand-mark brand-button" data-page-id="home">${t("brand")}</button>
         <nav class="top-nav-links" aria-label="Primary">
-          <a href="#demand-lab">Demand</a>
-          <a href="#chain-builder">Chain Builder</a>
-          <a href="#strategy-lab">Strategy</a>
-          <a href="#share-lab">Share</a>
-          <a href="#bullwhip-analysis">Bullwhip</a>
+          ${pages
+            .map(
+              (page) => `
+            <button class="top-nav-tab ${state.activePage === page.id ? "is-active" : ""}" data-page-id="${page.id}">
+              ${page.label}
+            </button>
+          `
+            )
+            .join("")}
         </nav>
+        <label class="language-switch">
+          <span>Lang</span>
+          <select id="language-select">
+            <option value="en" ${state.language === "en" ? "selected" : ""}>English</option>
+            <option value="zh" ${state.language === "zh" ? "selected" : ""}>中文</option>
+            <option value="fr" ${state.language === "fr" ? "selected" : ""}>Français</option>
+            <option value="ja" ${state.language === "ja" ? "selected" : ""}>日本語</option>
+          </select>
+        </label>
       </div>
     </section>
   `;
 }
 
-function createAboutMarkup() {
+function createAboutMarkupLegacy() {
   return `
     <section id="about-sim" class="panel about-panel">
       <div class="section-heading">
@@ -745,6 +971,39 @@ function createAboutMarkup() {
           <h3>Strategy Shapes the Outcome</h3>
           <p class="supporting">You can tune each node’s policy, sentiment, service bias, and delays, then compare how conservative vs aggressive decisions change profit and the bullwhip effect.</p>
         </article>
+      </div>
+    </section>
+  `;
+}
+
+function createGettingStartedMarkupLegacy() {
+  return `
+    <section class="panel getting-started-panel">
+      <div class="section-heading">
+        <h2>How To Use It</h2>
+        <span class="supporting">A short path for first-time users.</span>
+      </div>
+      <div class="about-grid">
+        <article class="about-card step-card">
+          <span class="step-index">1</span>
+          <h3>Shape Demand</h3>
+          <p class="supporting">Start in <strong>Model</strong>. Create a customer demand sequence or use a preset like Classic Bullwhip.</p>
+        </article>
+        <article class="about-card step-card">
+          <span class="step-index">2</span>
+          <h3>Tune The Chain</h3>
+          <p class="supporting">Add layers, change delays, and edit each node’s strategy so you can test conservative versus aggressive behavior.</p>
+        </article>
+        <article class="about-card step-card">
+          <span class="step-index">3</span>
+          <h3>Run And Compare</h3>
+          <p class="supporting">Open <strong>Run</strong> to inspect playback, bullwhip charts, inventory oscillation, backlog, and turn-by-turn detail.</p>
+        </article>
+      </div>
+      <div class="button-row landing-actions">
+        <button class="button primary" data-page-id="model">Start Modeling</button>
+        <button class="button ghost" data-page-id="run">Jump To Analysis</button>
+        <button class="button ghost" data-page-id="share">Open Share Tools</button>
       </div>
     </section>
   `;
@@ -1363,6 +1622,18 @@ function createHeroMarkup() {
     (best, current) => (current.amplification > best.amplification ? current : best),
     bullwhipMetrics[0] ?? { amplification: 1, nodeId: "retailer", peakOrder: 0 }
   );
+  const landingSeries = [
+    {
+      label: "customer demand",
+      values: bullwhipMetrics[0]?.demandHistory ?? [],
+      color: "#111111",
+    },
+    ...bullwhipMetrics.slice(0, 3).map((metric, index) => ({
+      label: `${metric.nodeId} order`,
+      values: metric.ordersPlaced,
+      color: ["#155f63", "#b56729", "#a63d40"][index % 3],
+    })),
+  ];
 
   return `
     <section id="top" class="panel hero">
@@ -1677,15 +1948,362 @@ function createFooterMarkup() {
   return `
     <footer class="site-footer">
       <div>
-        <strong>Supply Chain Simulation</strong>
-        <p>Configurable Beer Game style simulator for exploring delays, policies, profit, and the bullwhip effect.</p>
+        <strong>${t("brand")}</strong>
+        <p>${t("footerText")}</p>
       </div>
       <div class="footer-links">
         <a href="#top">Top</a>
         <a href="#about-sim">How It Works</a>
-        <a href="#share-lab">Share</a>
+        <a href="#share-lab">${t("navShare")}</a>
       </div>
     </footer>
+  `;
+}
+
+function createLandingHeroMarkupLegacy() {
+  const bullwhipMetrics = getBullwhipMetrics();
+  const mostAmplified = bullwhipMetrics.reduce(
+    (best, current) => (current.amplification > best.amplification ? current : best),
+    bullwhipMetrics[0] ?? { amplification: 1, nodeId: "retailer", peakOrder: 0 }
+  );
+
+  return `
+    <section id="top" class="panel landing-hero">
+      <div class="landing-copy">
+        <p class="eyebrow">Supply Chain Studio · v${VERSION}</p>
+        <h1>Model the Beer Game with clearer strategy, cleaner visuals, and faster insight.</h1>
+        <p class="lede">
+          Build a chain, inject demand shocks, tune replenishment logic, and watch the bullwhip effect unfold through orders, inventory, backlog, and profit.
+        </p>
+        <div class="hero-bullets">
+          <span>Configurable demand and delays</span>
+          <span>Forecast, base-stock, and profit-aware policies</span>
+          <span>Playback, comparison, save, and share tools</span>
+        </div>
+        <div class="button-row landing-actions">
+          <button class="button primary" data-page-id="model">Start Modeling</button>
+          <button class="button ghost" data-page-id="run">Open Analysis</button>
+          <button class="button ghost" data-page-id="share">Share Scenarios</button>
+        </div>
+      </div>
+      <div class="landing-highlight-grid">
+        <div class="highlight-card feature-card">
+          <span>Customer Peak</span>
+          <strong>${formatNumber(bullwhipMetrics[0]?.peakOrder ?? 0)}</strong>
+        </div>
+        <div class="highlight-card feature-card">
+          <span>Largest Amplification</span>
+          <strong>${mostAmplified.amplification?.toFixed(2) ?? "1.00"}x</strong>
+        </div>
+        <div class="highlight-card feature-card">
+          <span>Most Amplified Tier</span>
+          <strong>${mostAmplified.nodeId ?? "n/a"}</strong>
+        </div>
+        <div class="highlight-card stat-ribbon">
+          <span>Current Run</span>
+          <p>Use the tabs above to move between modeling, analysis, and sharing instead of scrolling through one long page.</p>
+        </div>
+        <div class="highlight-card live-preview-card">
+          <div class="section-heading">
+            <h3>Latest Run Preview</h3>
+            <span>${state.result?.turns ?? 0} turns</span>
+          </div>
+          ${multiSeriesChartSvg({ series: landingSeries, width: 560, height: 220 })}
+          <p class="supporting">This preview uses the most recent run so the landing page shows a real customer-demand versus upstream-order snapshot.</p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function createScenarioEditorMarkup() {
+  return `
+    <section class="panel control-panel">
+      <div class="section-heading">
+        <h2>Scenario Config</h2>
+        <button id="reset-scenario" class="button ghost">Reset Default</button>
+      </div>
+      <p class="supporting">
+        Keep the JSON editor for full control, but use the strategy lab above for the most important parameters like delays,
+        shortage penalties, and policy settings.
+      </p>
+      <label class="field">
+        <span>Scenario JSON</span>
+        <textarea id="scenario-input" spellcheck="false">${state.scenarioText}</textarea>
+      </label>
+      <div id="scenario-error" class="error-text"></div>
+      <div class="button-row">
+        <button id="run-sim" class="button primary">Run Simulation</button>
+      </div>
+    </section>
+  `;
+}
+
+function createTopNavMarkup() {
+  const pages = [
+    { id: "home", label: t("navHome") },
+    { id: "model", label: t("navModel") },
+    { id: "run", label: t("navRun") },
+    { id: "share", label: t("navShare") },
+  ];
+
+  return `
+    <section class="top-nav-shell">
+      <div class="top-nav">
+        <button class="brand-mark brand-button" data-page-id="home">${t("brand")}</button>
+        <nav class="top-nav-links" aria-label="Primary">
+          ${pages
+            .map(
+              (page) => `
+            <button class="top-nav-tab ${state.activePage === page.id ? "is-active" : ""}" data-page-id="${page.id}">
+              ${page.label}
+            </button>
+          `
+            )
+            .join("")}
+        </nav>
+        <label class="language-switch">
+          <span>Lang</span>
+          <select id="language-select">
+            <option value="en" ${state.language === "en" ? "selected" : ""}>English</option>
+            <option value="zh" ${state.language === "zh" ? "selected" : ""}>中文</option>
+            <option value="fr" ${state.language === "fr" ? "selected" : ""}>Français</option>
+            <option value="ja" ${state.language === "ja" ? "selected" : ""}>日本語</option>
+          </select>
+        </label>
+      </div>
+    </section>
+  `;
+}
+
+function createAboutMarkup() {
+  return `
+    <section id="about-sim" class="panel about-panel">
+      <div class="section-heading">
+        <h2>${t("aboutTitle")}</h2>
+        <span class="supporting">${t("aboutLead")}</span>
+      </div>
+      <div class="about-grid">
+        <article class="about-card">
+          <h3>${t("about1Title")}</h3>
+          <p class="supporting">${t("about1Body")}</p>
+        </article>
+        <article class="about-card">
+          <h3>${t("about2Title")}</h3>
+          <p class="supporting">${t("about2Body")}</p>
+        </article>
+        <article class="about-card">
+          <h3>${t("about3Title")}</h3>
+          <p class="supporting">${t("about3Body")}</p>
+        </article>
+      </div>
+    </section>
+  `;
+}
+
+function createGettingStartedMarkup() {
+  return `
+    <section class="panel getting-started-panel">
+      <div class="section-heading">
+        <h2>${t("howToTitle")}</h2>
+        <span class="supporting">${t("howToLead")}</span>
+      </div>
+      <div class="about-grid">
+        <article class="about-card step-card">
+          <span class="step-index">1</span>
+          <h3>${t("step1Title")}</h3>
+          <p class="supporting">${t("step1Body")}</p>
+        </article>
+        <article class="about-card step-card">
+          <span class="step-index">2</span>
+          <h3>${t("step2Title")}</h3>
+          <p class="supporting">${t("step2Body")}</p>
+        </article>
+        <article class="about-card step-card">
+          <span class="step-index">3</span>
+          <h3>${t("step3Title")}</h3>
+          <p class="supporting">${t("step3Body")}</p>
+        </article>
+      </div>
+      <div class="button-row landing-actions">
+        <button class="button primary" data-page-id="model">${t("ctaModel")}</button>
+        <button class="button ghost" data-page-id="run">${t("ctaRun")}</button>
+        <button class="button ghost" data-page-id="share">${t("ctaShare")}</button>
+      </div>
+    </section>
+  `;
+}
+
+function createLandingHeroMarkup() {
+  const bullwhipMetrics = getBullwhipMetrics();
+  const mostAmplified = bullwhipMetrics.reduce(
+    (best, current) => (current.amplification > best.amplification ? current : best),
+    bullwhipMetrics[0] ?? { amplification: 1, nodeId: "retailer", peakOrder: 0 }
+  );
+  const landingSeries = [
+    {
+      label: t("customerPeak"),
+      values: bullwhipMetrics[0]?.demandHistory ?? [],
+      color: "#111111",
+    },
+    ...bullwhipMetrics.slice(0, 3).map((metric, index) => ({
+      label: `${metric.nodeId} order`,
+      values: metric.ordersPlaced,
+      color: ["#155f63", "#b56729", "#a63d40"][index % 3],
+    })),
+  ];
+
+  return `
+    <section id="top" class="panel landing-hero">
+      <div class="landing-copy">
+        <p class="eyebrow">${t("landingEyebrow")} · v${VERSION}</p>
+        <h1>${t("landingTitle")}</h1>
+        <p class="lede">${t("landingLead")}</p>
+        <div class="hero-bullets">
+          <span>${t("bullet1")}</span>
+          <span>${t("bullet2")}</span>
+          <span>${t("bullet3")}</span>
+        </div>
+        <div class="button-row landing-actions">
+          <button class="button primary" data-page-id="model">${t("ctaModel")}</button>
+          <button class="button ghost" data-page-id="run">${t("ctaRun")}</button>
+          <button class="button ghost" data-page-id="share">${t("ctaShare")}</button>
+        </div>
+      </div>
+      <div class="landing-highlight-grid">
+        <div class="highlight-card feature-card">
+          <span>${t("customerPeak")}</span>
+          <strong>${formatNumber(bullwhipMetrics[0]?.peakOrder ?? 0)}</strong>
+        </div>
+        <div class="highlight-card feature-card">
+          <span>${t("largestAmp")}</span>
+          <strong>${mostAmplified.amplification?.toFixed(2) ?? "1.00"}x</strong>
+        </div>
+        <div class="highlight-card feature-card">
+          <span>${t("mostAmpTier")}</span>
+          <strong>${mostAmplified.nodeId ?? "n/a"}</strong>
+        </div>
+        <div class="highlight-card stat-ribbon">
+          <span>${t("currentRun")}</span>
+          <p>${t("currentRunText")}</p>
+        </div>
+        <div class="highlight-card live-preview-card">
+          <div class="section-heading">
+            <h3>${t("latestRunPreview")}</h3>
+            <span>${state.result?.turns ?? 0} ${t("turns")}</span>
+          </div>
+          ${multiSeriesChartSvg({ series: landingSeries, width: 560, height: 220 })}
+          <p class="supporting">${t("latestPreviewText")}</p>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function createPlaybackMarkup() {
+  return `
+    <section class="panel playback-panel">
+      <div class="section-heading">
+        <h2>Playback</h2>
+        <span class="turn-badge">Turn ${state.selectedTurn} / ${state.result?.turns ?? 0}</span>
+      </div>
+      <label class="field compact">
+        <span>Selected Turn</span>
+        <input id="turn-slider" type="range" min="1" max="${state.result?.turns ?? 1}" value="${state.selectedTurn}" />
+      </label>
+      <div class="button-row">
+        <button id="prev-turn" class="button ghost">Previous</button>
+        <button id="next-turn" class="button ghost">Next</button>
+        <button id="play-turns" class="button primary">${state.autoplayTimer ? "Pause" : "Autoplay"}</button>
+      </div>
+      <label class="field compact">
+        <span>Autoplay Speed</span>
+        <select id="speed-select">
+          <option value="1200" ${state.speedMs === 1200 ? "selected" : ""}>Slow</option>
+          <option value="900" ${state.speedMs === 900 ? "selected" : ""}>Normal</option>
+          <option value="450" ${state.speedMs === 450 ? "selected" : ""}>Fast</option>
+        </select>
+      </label>
+      <div class="explanation-box">
+        <h3>How to Read This</h3>
+        <p>
+          Move turn by turn and compare what changed in the downstream signal, what inventory arrived, and how each tier reacted.
+        </p>
+      </div>
+    </section>
+  `;
+}
+
+function createModelPageMarkup() {
+  return `
+    <section class="page-section">
+      <div class="section-heading section-banner">
+        <div>
+          <h2>${t("pageModelTitle")}</h2>
+          <span class="supporting">${t("pageModelLead")}</span>
+        </div>
+      </div>
+      ${createDemandLabMarkup()}
+      ${createChainBuilderMarkup()}
+      ${createStrategyLabMarkup()}
+      ${createScenarioEditorMarkup()}
+    </section>
+  `;
+}
+
+function createRunPageMarkup() {
+  return `
+    <section class="page-section">
+      <div class="section-heading section-banner">
+        <div>
+          <h2>${t("pageRunTitle")}</h2>
+          <span class="supporting">${t("pageRunLead")}</span>
+        </div>
+      </div>
+      ${createPlaybackMarkup()}
+      ${createComparisonMarkup()}
+      ${createChainMarkup()}
+      ${createBullwhipMarkup()}
+      ${createChartsMarkup()}
+      ${createTurnTableMarkup()}
+    </section>
+  `;
+}
+
+function createSharePageMarkup() {
+  return `
+    <section class="page-section">
+      <div class="section-heading section-banner">
+        <div>
+          <h2>${t("pageShareTitle")}</h2>
+          <span class="supporting">${t("pageShareLead")}</span>
+        </div>
+      </div>
+      ${createShareMarkup()}
+      ${createLibraryMarkup()}
+    </section>
+  `;
+}
+
+function createPageContentMarkup() {
+  if (state.activePage === "model") {
+    return createModelPageMarkup();
+  }
+
+  if (state.activePage === "run") {
+    return createRunPageMarkup();
+  }
+
+  if (state.activePage === "share") {
+    return createSharePageMarkup();
+  }
+
+  return `
+    <section class="page-section">
+      ${createLandingHeroMarkup()}
+      ${createAboutMarkup()}
+      ${createGettingStartedMarkup()}
+    </section>
   `;
 }
 
@@ -2150,6 +2768,19 @@ function createTurnTableMarkup() {
 }
 
 function bindEvents() {
+  document.querySelectorAll("[data-page-id]").forEach((element) => {
+    element.addEventListener("click", () => {
+      state.activePage = element.dataset.pageId;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      render();
+    });
+  });
+
+  document.querySelector("#language-select")?.addEventListener("change", (event) => {
+    state.language = event.target.value;
+    render();
+  });
+
   document.querySelector("#scenario-input")?.addEventListener("input", (event) => {
     state.scenarioText = event.target.value;
   });
@@ -2455,19 +3086,7 @@ function render() {
   app.innerHTML = `
     <main class="page-shell">
       ${createTopNavMarkup()}
-      ${createHeroMarkup()}
-      ${createAboutMarkup()}
-      ${createDemandLabMarkup()}
-      ${createChainBuilderMarkup()}
-      ${createStrategyLabMarkup()}
-      ${createScenarioMarkup()}
-      ${createShareMarkup()}
-      ${createLibraryMarkup()}
-      ${createComparisonMarkup()}
-      ${createChainMarkup()}
-      ${createBullwhipMarkup()}
-      ${createChartsMarkup()}
-      ${createTurnTableMarkup()}
+      ${createPageContentMarkup()}
       ${createFooterMarkup()}
     </main>
   `;
