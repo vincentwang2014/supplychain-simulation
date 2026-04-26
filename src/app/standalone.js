@@ -1762,11 +1762,11 @@ function createComparisonMarkup() {
 
         return `
           <tr>
-            <td>${leftNode?.name ?? nodeId}</td>
-            <td>${formatNumber(baseMetric?.peakOrder ?? 0)}</td>
-            <td>${(baseMetric?.amplification ?? 0).toFixed(2)}x</td>
-            <td>${formatNumber(compareMetric?.peakOrder ?? 0)}</td>
-            <td>${(compareMetric?.amplification ?? 0).toFixed(2)}x</td>
+            <td data-label="Node">${leftNode?.name ?? nodeId}</td>
+            <td data-label="Base Peak">${formatNumber(baseMetric?.peakOrder ?? 0)}</td>
+            <td data-label="Base Amp">${(baseMetric?.amplification ?? 0).toFixed(2)}x</td>
+            <td data-label="Variant Peak">${formatNumber(compareMetric?.peakOrder ?? 0)}</td>
+            <td data-label="Variant Amp">${(compareMetric?.amplification ?? 0).toFixed(2)}x</td>
           </tr>
         `;
       }).join("")
@@ -1915,7 +1915,7 @@ function createChainMarkup() {
         </article>
       `;
     })
-    .join('<div class="chain-arrow">→</div>');
+    .join('<div class="chain-arrow">&rarr;</div>');
 
   return `
     <section class="panel">
@@ -2104,16 +2104,16 @@ function createTurnTableMarkup() {
       const node = state.scenario.nodes.find((entry) => entry.id === nodeId);
         return `
           <tr>
-            <td>${node.name}</td>
-            <td>${formatNumber(turn.arrivalsReceived)}</td>
-            <td>${formatNumber(turn.orderReceived)}</td>
-            <td>${formatNumber(turn.owedDemand)}</td>
-            <td>${formatNumber(turn.shipmentSent)}</td>
-            <td>${formatNumber(turn.replenishmentOrderPlaced || turn.productionOrderPlaced || 0)}</td>
-            <td>${formatNumber(turn.inboundPipelineTotalEnd)}</td>
-            <td>${formatNumber(turn.inventoryEnd + turn.inboundPipelineTotalEnd - turn.backlogEnd)}</td>
-            <td>${formatNumber(turn.holdingCost)}</td>
-            <td>${formatNumber(turn.shortageCost)}</td>
+            <td data-label="Node">${node.name}</td>
+            <td data-label="Arrivals">${formatNumber(turn.arrivalsReceived)}</td>
+            <td data-label="Order In">${formatNumber(turn.orderReceived)}</td>
+            <td data-label="Owed">${formatNumber(turn.owedDemand)}</td>
+            <td data-label="Ship Out">${formatNumber(turn.shipmentSent)}</td>
+            <td data-label="Order Up">${formatNumber(turn.replenishmentOrderPlaced || turn.productionOrderPlaced || 0)}</td>
+            <td data-label="Pipeline End">${formatNumber(turn.inboundPipelineTotalEnd)}</td>
+            <td data-label="Inv Position">${formatNumber(turn.inventoryEnd + turn.inboundPipelineTotalEnd - turn.backlogEnd)}</td>
+            <td data-label="Holding Cost">${formatNumber(turn.holdingCost)}</td>
+            <td data-label="Shortage Cost">${formatNumber(turn.shortageCost)}</td>
           </tr>
         `;
     })
